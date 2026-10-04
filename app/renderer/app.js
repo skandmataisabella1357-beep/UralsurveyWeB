@@ -181,6 +181,9 @@
     if (probe.kind === 'text') {
       return `<p class="notice">Порт отвечает текстом, а не потоком данных: «${esc(probe.text)}».</p>`;
     }
+    if (probe.kind === 'silent' && probe.tunnel) {
+      return `<p class="notice">Соединение идёт через VPN (${esc(probe.tunnel)}). Туннель принимает его сам, а данных от станции нет: похоже, до приёмника запрос не доходит. Выключите VPN или добавьте адрес станции в его исключения, и приложение подключится само.</p>`;
+    }
     if (probe.kind === 'silent') {
       return '<p class="notice">Порт принимает соединение, но ничего не передаёт и на запрос NTRIP не отвечает. Так ведёт себя порт, на который приёмник сам отправляет поток: сервер там ждёт данные, а не раздаёт их. Второй вариант — источник сейчас молчит.</p>';
     }
@@ -377,6 +380,56 @@
       // Electron добавляет к тексту ошибки служебный префикс
       el.textContent = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
       el.hidden = false;
+    }
+  });
+
+  // ---------- Форма кастера ----------
+
+  const casterDialog = $('caster-dialog');
+  const casterForm = $('caster-form');
+
+  function remoteError(err) {
+    // Electron добавляет к тексту ошибки служебный префикс
+    return String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  }
+
+  $('caster-btn').addEventListener('click', async () => {
+    const d = await core.casterDefaults();
+    casterForm.reset();
+    $('caster-error').hidden = true;
+    casterForm.elements.host.value = d.host || '';
+    casterForm.elements.port.value = d.port || '';
+    casterForm.elements.filter.value = d.filter || '';
+    casterDialog.showModal();
+    casterForm.elements.username.focus();
+  });
+  $('caster-cancel').addEventListener('click', () => casterDialog.close());
+
+  casterForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const f = casterForm.elements;
+    const btn = $('caster-save');
+    btn.disabled = true;
+    try {
+      const res = await core.importCaster({
+        host: f.host.value,
+        port: f.port.value,
+        username: f.username.value,
+        password: f.password.value,
+        filter: f.filter.value,
+      });
+      state.configs = await core.listStations();
+      casterDialog.close();
+      const parts = [];
+      if (res.added) parts.push(`добавлено ${res.added} ${plural(res.added, 'станция', 'станции', 'станций')}`);
+      if (res.updated) parts.push(`обновлён вход у ${res.updated}`);
+      toast(parts.length ? upperFirst(parts.join(', ')) : 'Все эти точки уже есть в списке');
+    } catch (err) {
+      const el = $('caster-error');
+      el.textContent = remoteError(err);
+      el.hidden = false;
+    } finally {
+      btn.disabled = false;
     }
   });
 

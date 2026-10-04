@@ -39,6 +39,7 @@
     <div class="topbar-actions">
       <button class="btn btn-quiet" id="theme-btn" type="button"></button>
       <button class="btn btn-quiet" id="demo-btn" type="button">Показать демо-станции</button>
+      <button class="btn btn-quiet" id="caster-btn" type="button">Точки с кастера</button>
       <button class="btn btn-primary" id="add-btn" type="button">Добавить станцию</button>
     </div>
   </header>
@@ -116,6 +117,47 @@
       <div class="dialog-actions">
         <button class="btn btn-quiet" type="button" id="dialog-cancel">Отмена</button>
         <button class="btn btn-primary" type="submit" id="dialog-save">Сохранить и подключить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="caster-dialog">
+    <form id="caster-form" method="dialog" novalidate>
+      <h2>Точки с кастера</h2>
+      <p class="hint">Программа запросит у кастера список точек подключения и заведёт станцию на каждую подходящую. Логин и пароль — общие для всех этих станций.</p>
+
+      <div class="row">
+        <label class="field grow">
+          <span>Адрес кастера</span>
+          <input name="host" type="text" autocomplete="off" placeholder="IP-адрес или имя узла">
+        </label>
+        <label class="field port">
+          <span>Порт</span>
+          <input name="port" type="text" inputmode="numeric" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="field grow">
+          <span>Логин</span>
+          <input name="username" type="text" autocomplete="off">
+        </label>
+        <label class="field grow">
+          <span>Пароль</span>
+          <input name="password" type="password" autocomplete="new-password">
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Брать точки, в названии которых есть</span>
+        <input name="filter" type="text" autocomplete="off" placeholder="все точки">
+      </label>
+
+      <p class="form-error" id="caster-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" type="button" id="caster-cancel">Отмена</button>
+        <button class="btn btn-primary" type="submit" id="caster-save">Добавить и подключить</button>
       </div>
     </form>
   </dialog>

@@ -6,6 +6,7 @@
 // Канал сам переподключается и рвёт соединение, если данные перестали идти.
 
 const net = require('net');
+const os = require('os');
 const { EventEmitter } = require('events');
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -279,21 +280,37 @@ function parseNtripResponse(buf) {
   return { error: `кастер ответил: ${status.slice(0, 60)}` };
 }
 
+// Имя сетевого интерфейса VPN, через который ушло соединение, или null.
+// VPN-туннель принимает соединение сам, не дойдя до адресата: порт выглядит открытым
+// и молчащим, хотя до приёмника запрос мог и не добраться.
+const TUNNEL_RE = /tun|tap|vpn|wireguard|^wg\d|ppp|happ|sing|tailscale|zerotier/i;
+
+function tunnelName(localAddress, interfaces = os.networkInterfaces()) {
+  if (!localAddress) return null;
+  const addr = localAddress.replace(/^::ffff:/, '');
+  for (const [name, list] of Object.entries(interfaces)) {
+    if (TUNNEL_RE.test(name) && list.some((i) => i.address === addr)) return name;
+  }
+  return null;
+}
+
 // Проверка «молчащего» порта: отдельным соединением спрашиваем у него таблицу источников,
 // как это делает любой NTRIP-клиент. По ответу видно, кастер это или нет.
 // Возвращает { kind: 'caster', mountpoints } | { kind: 'stream' } | { kind: 'text', text }
-// | { kind: 'silent' } | { kind: 'error', text }.
+// | { kind: 'silent' } | { kind: 'error', text }. Если соединение ушло через VPN,
+// в ответе есть поле tunnel с именем интерфейса.
 function probePort(host, port, timeoutMs = 6000) {
   return new Promise((resolve) => {
     let buf = Buffer.alloc(0);
     let done = false;
+    let tunnel = null;
     const socket = net.connect({ host, port });
     const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       socket.destroy();
-      resolve(result);
+      resolve(tunnel ? { ...result, tunnel } : result);
     };
     const classify = () => {
       if (!buf.length) return { kind: 'silent' };
@@ -310,6 +327,7 @@ function probePort(host, port, timeoutMs = 6000) {
     };
     const timer = setTimeout(() => finish(classify()), timeoutMs);
     socket.on('connect', () => {
+      tunnel = tunnelName(socket.localAddress);
       socket.write(`GET / HTTP/1.0\r\nHost: ${host}:${port}\r\nUser-Agent: NTRIP UralsurveyLite/0.1\r\nAccept: */*\r\n\r\n`);
     });
     socket.on('data', (chunk) => {
@@ -321,4 +339,4 @@ function probePort(host, port, timeoutMs = 6000) {
   });
 }
 
-module.exports = { Transport, STATES, parseNtripResponse, probePort };
+module.exports = { Transport, STATES, parseNtripResponse, probePort, tunnelName };

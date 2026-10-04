@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { StationHub } = require('../core/station');
+const { probePort } = require('../core/transport');
 const { createSimulator, syntheticSource } = require('../core/simulator');
 
 const ROOT = path.join(__dirname, '..');
@@ -15,6 +16,9 @@ const DEV = !app.isPackaged;
 const DEFAULT_STATIONS = [
   { id: 'sredneuralsk', name: 'Среднеуральск', mode: 'tcp', host: '185.41.162.156', port: 3238 },
 ];
+
+// Кастер сети: подставляется в форму «Точки с кастера», логин и пароль оператор вводит сам
+const DEFAULT_CASTER = { host: '91.226.82.205', port: 7066, filter: 'MSM4' };
 
 const DEMO_STATIONS = [
   { name: 'Демо: Екатеринбург', lat: 56.8389, lon: 60.6057, h: 270, stationId: 901 },
@@ -126,6 +130,53 @@ function registerIpc() {
   });
 
   ipcMain.handle('stations:reconnect', (event, id) => hub.reconnect(id));
+
+  ipcMain.handle('caster:defaults', () => ({ ...DEFAULT_CASTER, ...(config.caster || {}) }));
+
+  // Берём у кастера список точек подключения и заводим станцию на каждую подходящую
+  ipcMain.handle('caster:import', async (event, input) => {
+    const host = String(input.host || '').trim();
+    const port = Number(input.port);
+    const filter = String(input.filter || '').trim();
+    const username = String(input.username || '').trim();
+    if (!host) throw new Error('Укажите адрес кастера.');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Порт — число от 1 до 65535.');
+
+    const res = await probePort(host, port, 8000);
+    if (res.kind === 'error') throw new Error(`Кастер недоступен: ${res.text}.`);
+    if (res.kind !== 'caster') throw new Error('По этому адресу и порту список точек подключения не отдаётся: похоже, это не NTRIP-кастер.');
+    const wanted = res.mountpoints.filter((m) => m.name && (!filter || m.name.toLowerCase().includes(filter.toLowerCase())));
+    if (!wanted.length) {
+      throw new Error(filter
+        ? `На кастере нет точек подключения с «${filter}» в названии. Всего точек: ${res.mountpoints.length}.`
+        : 'Кастер прислал пустой список точек подключения.');
+    }
+
+    const password = typeof input.password === 'string' && input.password !== '' ? encryptPassword(input.password) : '';
+    let added = 0;
+    let updated = 0;
+    for (const m of wanted) {
+      const existing = config.stations.find((s) => s.mode === 'ntrip' && s.host === host && s.port === port && s.mountpoint === m.name);
+      if (existing) {
+        // Точка уже заведена: обновляем только логин и пароль, если их ввели
+        if (!username && !password) continue;
+        if (username) existing.username = username;
+        if (password) existing.password = password;
+        hub.set(sessionConfig(existing));
+        updated++;
+        continue;
+      }
+      const station = {
+        id: crypto.randomUUID(), name: m.name, mode: 'ntrip', host, port, mountpoint: m.name, username, relayPort: null, password,
+      };
+      config.stations.push(station);
+      hub.set(sessionConfig(station));
+      added++;
+    }
+    config.caster = { host, port, filter };
+    saveConfig();
+    return { added, updated, total: res.mountpoints.length };
+  });
 
   ipcMain.handle('demo:set', async (event, on) => {
     if (on && !demo.length) {

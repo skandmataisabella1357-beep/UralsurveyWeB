@@ -12,7 +12,7 @@ const rtcm = require('../core/rtcm3');
 const { parseGga } = require('../core/nmea');
 const { ecefToLlh, llhToEcef, D2R, R2D } = require('../core/geo');
 const { solveEpoch, PositionAverager } = require('../core/spp');
-const { parseNtripResponse, probePort } = require('../core/transport');
+const { parseNtripResponse, probePort, tunnelName } = require('../core/transport');
 const sim = require('../core/simulator');
 const { StationSession } = require('../core/station');
 
@@ -356,6 +356,17 @@ test('связь: приёмник сам подключается к откры
   } finally {
     session.stop();
   }
+});
+
+test('соединение через VPN распознаётся по имени интерфейса', () => {
+  const ifaces = {
+    'happ-tun': [{ address: '172.18.0.1' }],
+    'Беспроводная сеть': [{ address: '192.168.0.21' }],
+  };
+  assert.equal(tunnelName('172.18.0.1', ifaces), 'happ-tun');
+  assert.equal(tunnelName('::ffff:172.18.0.1', ifaces), 'happ-tun');
+  assert.equal(tunnelName('192.168.0.21', ifaces), null);
+  assert.equal(tunnelName(undefined, ifaces), null);
 });
 
 test('проверка молчащего порта: кастер, поток и тишина различаются', async () => {

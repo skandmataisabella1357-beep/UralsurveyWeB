@@ -374,6 +374,9 @@ function mergeSats(a, b) {
 }
 
 function probeSummary(res) {
+  if (res.tunnel && res.kind === 'silent') {
+    return `соединение идёт через VPN (${res.tunnel}) и до станции, похоже, не доходит: данных нет`;
+  }
   switch (res.kind) {
     case 'caster': return `это NTRIP-кастер, точек подключения: ${res.mountpoints.length}`;
     case 'stream': return 'после запроса порт начал отдавать двоичный поток';
