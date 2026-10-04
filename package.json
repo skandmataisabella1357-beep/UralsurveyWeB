@@ -1,0 +1,25 @@
+{
+  "name": "uralsurvey-lite",
+  "productName": "Uralsurvey",
+  "version": "0.1.0",
+  "description": "Лёгкая оболочка для приёма данных с базовых станций сети Uralsurvey",
+  "main": "app/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/core.test.js",
+    "dist:win": "npx --yes electron-builder --win portable",
+    "dist:linux": "npx --yes electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1"
+  },
+  "build": {
+    "appId": "ru.uralsurvey.lite",
+    "files": [
+      "app/**/*",
+      "core/**/*",
+      "package.json"
+    ]
+  }
+}

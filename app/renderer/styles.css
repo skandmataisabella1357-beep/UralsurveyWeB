@@ -1,0 +1,581 @@
+/* Uralsurvey — станции сети. Мягкая голография: стекло поверх карты, перелив в акцентах. */
+
+@font-face {
+  font-family: 'Geologica';
+  font-weight: 100 900;
+  font-display: block;
+  src: url('vendor/fonts/geologica-cyrillic-wght-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Geologica';
+  font-weight: 100 900;
+  font-display: block;
+  src: url('vendor/fonts/geologica-latin-wght-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215;
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-weight: 100 800;
+  font-display: block;
+  src: url('vendor/fonts/martian-mono-cyrillic-wght-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-weight: 100 800;
+  font-display: block;
+  src: url('vendor/fonts/martian-mono-latin-wght-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+2000-206F, U+2212;
+}
+
+/* ---------- Светлая тема ---------- */
+:root {
+  --base: #f4f2fb;
+  --mesh-a: #e2d8ff;
+  --mesh-b: #ffdff0;
+  --mesh-c: #d3f5ea;
+  --mesh-d: #d8e9ff;
+
+  --glass: rgba(255, 255, 255, 0.58);
+  --glass-strong: rgba(255, 255, 255, 0.86);
+  --inset: rgba(255, 255, 255, 0.55);
+  --hover: rgba(255, 255, 255, 0.5);
+  --line: rgba(92, 80, 168, 0.13);
+  --shadow: 0 18px 50px rgba(104, 88, 190, 0.16), 0 2px 6px rgba(104, 88, 190, 0.08);
+
+  --text: #2b2652;
+  --muted: #6a6592;
+  --faint: #9a96bc;
+  --on-holo: #2b2652;
+
+  --flow: #17a886;
+  --wait: #cf8427;
+  --fail: #d6517a;
+  --wait-soft: rgba(233, 160, 72, 0.14);
+  --wait-text: #9a5d12;
+  --fail-text: #b53a62;
+
+  --holo: linear-gradient(115deg, #a890ff 0%, #f09ccc 22%, #ffc48e 42%, #86e2c0 62%, #84c8ff 80%, #b39bff 100%);
+  --holo-soft: linear-gradient(115deg, rgba(168, 144, 255, 0.2), rgba(240, 156, 204, 0.18), rgba(134, 226, 192, 0.18), rgba(132, 200, 255, 0.2));
+  --bar: linear-gradient(180deg, #a890ff, #84c8ff);
+  --edge: 0.85;
+
+  --grid: rgba(92, 80, 168, 0.16);
+  --grid-text: rgba(74, 66, 132, 0.78);
+  --tiles: saturate(0.5) hue-rotate(-14deg) brightness(1.05) contrast(0.9);
+  --tint: linear-gradient(125deg, rgba(168, 144, 255, 0.22), rgba(255, 190, 220, 0.14) 40%, rgba(134, 226, 192, 0.14) 70%, rgba(132, 200, 255, 0.2));
+  --pin-fill: rgba(255, 255, 255, 0.82);
+
+  --sans: 'Geologica', 'Segoe UI', system-ui, sans-serif;
+  --figures: 'Martian Mono', 'Cascadia Mono', 'Consolas', monospace;
+  color-scheme: light;
+}
+
+/* ---------- Тёмная тема ---------- */
+:root[data-theme='dark'] {
+  --base: #16142c;
+  --mesh-a: #2d2568;
+  --mesh-b: #3e2352;
+  --mesh-c: #153a48;
+  --mesh-d: #1e2c60;
+
+  --glass: rgba(36, 32, 72, 0.56);
+  --glass-strong: rgba(40, 36, 80, 0.9);
+  --inset: rgba(255, 255, 255, 0.055);
+  --hover: rgba(255, 255, 255, 0.05);
+  --line: rgba(206, 196, 255, 0.13);
+  --shadow: 0 18px 50px rgba(6, 4, 24, 0.42), 0 2px 6px rgba(6, 4, 24, 0.3);
+
+  --text: #edebff;
+  --muted: #aca8d8;
+  --faint: #7c77ac;
+  --on-holo: #251f4c;
+
+  --flow: #7fe6c8;
+  --wait: #ffcf99;
+  --fail: #ff9db6;
+  --wait-soft: rgba(255, 207, 153, 0.1);
+  --wait-text: #ffdcb4;
+  --fail-text: #ffb4c6;
+
+  --holo: linear-gradient(115deg, #b9a6ff 0%, #f6b3dd 22%, #ffd6aa 42%, #a9efd3 62%, #a0d7ff 80%, #c4b1ff 100%);
+  --holo-soft: linear-gradient(115deg, rgba(185, 166, 255, 0.16), rgba(246, 179, 221, 0.13), rgba(169, 239, 211, 0.12), rgba(160, 215, 255, 0.15));
+  --bar: linear-gradient(180deg, #c4b1ff, #a0d7ff);
+  --edge: 0.6;
+
+  --grid: rgba(206, 196, 255, 0.13);
+  --grid-text: rgba(206, 200, 250, 0.72);
+  --tiles: invert(1) hue-rotate(205deg) saturate(0.45) brightness(0.86) contrast(0.88);
+  --tint: linear-gradient(125deg, rgba(120, 96, 230, 0.26), rgba(220, 120, 180, 0.12) 40%, rgba(80, 200, 170, 0.1) 70%, rgba(90, 160, 240, 0.2));
+  --pin-fill: rgba(30, 26, 62, 0.82);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  position: relative;
+  background:
+    radial-gradient(60% 55% at 10% 6%, var(--mesh-a) 0%, transparent 62%),
+    radial-gradient(52% 48% at 90% 10%, var(--mesh-b) 0%, transparent 62%),
+    radial-gradient(56% 52% at 82% 94%, var(--mesh-c) 0%, transparent 62%),
+    radial-gradient(52% 52% at 12% 94%, var(--mesh-d) 0%, transparent 62%),
+    var(--base);
+  color: var(--text);
+  font: 350 14px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+h1, h2, h3, p, dl, dd, ul, ol, figure { margin: 0; padding: 0; }
+ul, ol { list-style: none; }
+button, input { font: inherit; color: inherit; }
+
+.fig {
+  font-family: var(--figures);
+  font-weight: 350;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+:focus-visible { outline: 2px solid #a890ff; outline-offset: 2px; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--faint); }
+
+/* ---------- Стекло с переливчатой кромкой ---------- */
+
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  backdrop-filter: blur(28px) saturate(1.5);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+}
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--holo);
+  background-size: 220% 220%;
+  opacity: var(--edge);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: shimmer 16s ease-in-out infinite alternate;
+}
+@keyframes shimmer {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
+/* ---------- Карта во всё окно ---------- */
+
+.map-wrap { position: absolute; inset: 0; z-index: 0; }
+#map { position: absolute; inset: 0; background: transparent; }
+.map-tint { position: absolute; inset: 0; background: var(--tint); mix-blend-mode: soft-light; pointer-events: none; z-index: 1; }
+#graticule { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+
+.leaflet-tile-pane { filter: var(--tiles); }
+.leaflet-container { font-family: var(--sans); background: transparent; }
+.leaflet-bottom.leaflet-left { left: 320px; bottom: 10px; }
+.leaflet-bottom.leaflet-right { right: 436px; bottom: 10px; }
+.leaflet-control-attribution {
+  background: var(--glass) !important;
+  color: var(--faint) !important;
+  font-size: 10.5px;
+  border-radius: 8px;
+  padding: 1px 8px !important;
+}
+.leaflet-control-attribution a { color: var(--muted) !important; }
+.leaflet-bar { border: 1px solid var(--line) !important; border-radius: 12px !important; overflow: hidden; box-shadow: var(--shadow) !important; }
+.leaflet-bar a {
+  background: var(--glass-strong) !important;
+  color: var(--text) !important;
+  border-bottom-color: var(--line) !important;
+  width: 34px !important;
+  height: 34px !important;
+  line-height: 32px !important;
+  font-weight: 300 !important;
+}
+.leaflet-bar a:hover { background: var(--base) !important; }
+.leaflet-control-scale-line {
+  background: var(--glass) !important;
+  border-color: var(--muted) !important;
+  color: var(--muted) !important;
+  font-family: var(--figures);
+  font-size: 10px;
+  text-shadow: none !important;
+}
+
+.map-note {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(calc(-50% - 58px));
+  width: max-content;
+  max-width: min(480px, calc(100% - 760px));
+  padding: 11px 16px;
+  border-radius: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Знак станции: треугольник геодезического пункта с переливчатым контуром.
+   Точка в центре — сам пункт, её цвет показывает состояние связи. */
+.pin { position: relative; width: 30px; height: 28px; cursor: pointer; }
+.pin svg { position: absolute; inset: 0; overflow: visible; }
+.pin-tri { fill: var(--pin-fill); stroke: var(--faint); stroke-width: 2; stroke-linejoin: round; }
+.pin-dot { fill: var(--faint); }
+.pin.is-online .pin-tri { stroke: url(#holo-stroke); }
+.pin.is-online .pin-dot { fill: var(--flow); }
+.pin.is-wait .pin-dot { fill: var(--wait); }
+.pin.is-fail .pin-dot { fill: var(--fail); }
+/* Положение вычислено приближённо — контур штриховой */
+.pin.is-approx .pin-tri { stroke-dasharray: 4.5 3; }
+
+.pin-glow {
+  position: absolute;
+  left: 15px;
+  top: 17px;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(from 20deg, #a890ff, #f09ccc, #ffc48e, #86e2c0, #84c8ff, #a890ff);
+  filter: blur(14px);
+  opacity: 0;
+}
+.pin.is-online .pin-glow { opacity: 0.42; animation: breathe 3.6s ease-in-out infinite; }
+@keyframes breathe {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.82); opacity: 0.3; }
+  50% { transform: translate(-50%, -50%) scale(1.08); opacity: 0.5; }
+}
+
+.pin-ring {
+  position: absolute;
+  left: 15px;
+  top: 17px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  padding: 1.5px;
+  background: conic-gradient(from 20deg, #a890ff, #f09ccc, #ffc48e, #86e2c0, #84c8ff, #a890ff);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  display: none;
+}
+.pin.is-selected .pin-ring { display: block; }
+
+.pin-label {
+  position: absolute;
+  left: 50%;
+  top: 34px;
+  transform: translateX(-50%);
+  padding: 3px 10px 4px;
+  border-radius: 10px;
+  background: var(--glass-strong);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--text);
+  white-space: nowrap;
+}
+.pin.is-selected .pin-label { top: 50px; }
+
+/* ---------- Верхняя полоса ---------- */
+
+.topbar {
+  position: absolute;
+  z-index: 10;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 12px 0 20px;
+}
+
+.brand { display: flex; align-items: center; gap: 11px; }
+.brand-mark { width: 36px; height: 36px; margin-left: -6px; }
+.brand-name { font-size: 17px; font-weight: 550; letter-spacing: 0.01em; }
+
+.summary { color: var(--muted); font-size: 13.5px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.summary b { color: var(--text); font-weight: 500; }
+
+.topbar-actions { display: flex; gap: 8px; }
+
+.btn {
+  height: 36px;
+  padding: 0 15px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: none;
+  font-size: 13.5px;
+  font-weight: 450;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--holo);
+  background-size: 180% 180%;
+  background-position: 0% 50%;
+  color: var(--on-holo);
+  font-weight: 500;
+  transition: background-position 0.6s ease;
+}
+.btn-primary:hover { background-position: 100% 50%; }
+.btn-quiet { border-color: var(--line); color: var(--muted); background: var(--inset); }
+.btn-quiet:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
+.btn-quiet[aria-pressed='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; }
+.btn-small { height: 30px; padding: 0 11px; font-size: 12.5px; border-radius: 10px; }
+.btn-danger { color: var(--fail-text); border-color: var(--fail); }
+
+/* ---------- Боковые панели ---------- */
+
+.rail, .inspector {
+  position: absolute;
+  z-index: 10;
+  top: 84px;
+  bottom: 16px;
+}
+.rail { left: 16px; width: 288px; }
+.inspector { right: 16px; width: 404px; }
+.scroll { position: absolute; inset: 1px; border-radius: 21px; overflow-y: auto; }
+.rail .scroll { bottom: 77px; border-radius: 21px 21px 0 0; }
+.rail-foot {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
+  border-top: 1px solid var(--line);
+}
+.rail-foot img { width: 46px; height: 46px; flex: none; }
+.rail-foot p { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.rail-foot b { display: block; font-size: 15px; font-weight: 550; color: var(--text); letter-spacing: 0.04em; }
+.empty-emblem { display: block; width: 168px; height: 168px; margin: 6px auto 18px; }
+#rail { padding: 9px; }
+#inspector { padding: 4px 0 26px; user-select: text; }
+
+/* ---------- Список станций ---------- */
+
+.station {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 11px;
+  width: 100%;
+  padding: 11px 11px 12px;
+  border: 0;
+  border-radius: 15px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.station + .station { margin-top: 3px; }
+.station:hover { background: var(--hover); }
+.station[aria-current='true'] { background: var(--holo-soft); box-shadow: inset 0 0 0 1px var(--line); }
+
+.station-mark { width: 18px; height: 17px; margin-top: 2px; overflow: visible; }
+.station-mark path { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke: var(--faint); }
+.station-mark circle { fill: var(--faint); }
+.is-online .station-mark path { stroke: url(#holo-stroke); }
+.is-online .station-mark circle { fill: var(--flow); }
+.is-wait .station-mark circle { fill: var(--wait); }
+.is-fail .station-mark circle { fill: var(--fail); }
+
+.station-name { font-size: 14.5px; font-weight: 450; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.station-state { grid-column: 2; font-size: 12.5px; color: var(--muted); line-height: 1.35; margin-top: 1px; }
+.is-fail .station-state { color: var(--fail-text); }
+.station-figures { grid-column: 2; margin-top: 6px; font-size: 10.5px; color: var(--faint); display: flex; gap: 14px; }
+.station-figures b { font-weight: 350; color: var(--muted); }
+
+.rail-empty { padding: 16px 12px; color: var(--muted); font-size: 13.5px; }
+.rail-empty b { display: block; color: var(--text); font-weight: 500; margin-bottom: 6px; font-size: 14.5px; }
+
+/* ---------- Панель станции ---------- */
+
+.ins-section { padding: 18px 22px 0; }
+.ins-rule { border-top: 1px solid var(--line); margin-top: 18px; }
+
+.ins-title { font-size: 13px; font-weight: 450; color: var(--muted); margin-bottom: 11px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.ins-title .fig { font-size: 11px; color: var(--faint); }
+
+.head-name { font-size: 23px; font-weight: 550; line-height: 1.2; overflow-wrap: anywhere; }
+.head-endpoint { margin-top: 6px; font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+.head-state { margin-top: 13px; display: flex; gap: 10px; align-items: baseline; font-size: 14px; font-weight: 400; }
+.head-state::before { content: ''; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--faint); transform: translateY(-0.5px); }
+.head-state.is-online::before { background: var(--flow); box-shadow: 0 0 0 4px color-mix(in srgb, var(--flow) 22%, transparent); }
+.head-state.is-wait::before { background: var(--wait); box-shadow: 0 0 0 4px color-mix(in srgb, var(--wait) 22%, transparent); }
+.head-state.is-fail::before { background: var(--fail); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fail) 22%, transparent); }
+.head-state small { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.head-actions { margin-top: 15px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.coords { display: grid; grid-template-columns: auto 1fr; column-gap: 16px; row-gap: 8px; align-items: baseline; }
+.coords dt { font-size: 13px; color: var(--muted); }
+.coords dd { font-size: 16px; }
+.coords dd span { font-family: var(--sans); font-size: 12.5px; color: var(--muted); letter-spacing: 0; margin-left: 5px; }
+
+.ecef { margin-top: 14px; padding: 3px 13px; background: var(--inset); border: 1px solid var(--line); border-radius: 14px; }
+.ecef div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 0; }
+.ecef div + div { border-top: 1px solid var(--line); }
+.ecef dt { font-size: 12.5px; color: var(--muted); }
+.ecef dd { font-size: 12px; white-space: nowrap; }
+.ecef dd span { font-family: var(--sans); font-size: 12px; color: var(--faint); letter-spacing: 0; margin-left: 4px; }
+
+.source { margin-top: 13px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.source b { color: var(--text); font-weight: 450; }
+
+.notice {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--wait-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wait) 38%, transparent);
+  color: var(--wait-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mounts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.notice.is-plain { background: var(--inset); box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
+
+/* Спутники: столбик — отношение сигнал/шум лучшего сигнала спутника */
+.sys { display: grid; grid-template-columns: 82px minmax(0, 1fr); column-gap: 10px; padding: 10px 0; }
+.sys + .sys { border-top: 1px solid var(--line); }
+.sys-name { font-size: 13.5px; font-weight: 450; }
+.sys-count { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.sys-signals { grid-column: 2; margin-top: 7px; font-size: 10px; color: var(--faint); display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sys-signals span:last-child { font-size: 11.5px; white-space: nowrap; }
+.bars { display: flex; flex-wrap: wrap; gap: 6px 3px; align-items: flex-end; }
+.bar { width: 14px; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.bar i { display: block; width: 8px; border-radius: 4px; background: var(--bar); }
+.bar.is-weak i { background: var(--wait); }
+.bar.is-blank i { background: var(--line); }
+.bar span { font-size: 8px; color: var(--faint); letter-spacing: -0.05em; }
+.bar-track { height: 34px; display: flex; align-items: flex-end; }
+
+.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 18px; row-gap: 7px; font-size: 13px; }
+.facts dt { color: var(--muted); }
+.facts dd { text-align: right; overflow-wrap: anywhere; }
+.facts dd.fig { font-size: 11.5px; }
+
+.messages { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.messages th { text-align: left; font-weight: 350; color: var(--faint); font-size: 11.5px; padding: 0 0 6px; }
+.messages td { padding: 6px 0; border-top: 1px solid var(--line); vertical-align: baseline; }
+.messages td:first-child { width: 50px; font-size: 11.5px; }
+.messages td:nth-child(2) { color: var(--muted); padding-right: 8px; }
+.messages th:nth-child(n+3), .messages td:nth-child(n+3) { text-align: right; white-space: nowrap; font-size: 11px; padding-left: 10px; }
+
+.log li { display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; padding: 4px 0; font-size: 12.5px; color: var(--muted); }
+.log time { font-size: 10px; color: var(--faint); padding-top: 3px; }
+.log .is-warn { color: var(--wait-text); }
+.log .is-error { color: var(--fail-text); }
+
+.inspector-empty { padding: 26px 24px; color: var(--muted); }
+.inspector-empty b { display: block; color: var(--text); font-size: 17px; font-weight: 550; margin-bottom: 8px; }
+
+/* ---------- Окно станции ---------- */
+
+.dialog {
+  width: 448px;
+  padding: 26px 26px 22px;
+  border: 0;
+  border-radius: 24px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5);
+  backdrop-filter: blur(30px) saturate(1.5);
+  color: var(--text);
+  box-shadow: var(--shadow), inset 0 0 0 1px var(--line);
+}
+.dialog::backdrop { background: color-mix(in srgb, var(--base) 55%, transparent); backdrop-filter: blur(6px); }
+.dialog h2 { font-size: 20px; font-weight: 550; margin-bottom: 18px; }
+
+.field { display: block; margin-bottom: 14px; }
+.field > span { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+.field input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--inset);
+  user-select: text;
+}
+.field input:focus { outline: none; border-color: #a890ff; box-shadow: 0 0 0 3px rgba(168, 144, 255, 0.22); }
+.field input::placeholder { color: var(--faint); }
+.row { display: flex; gap: 12px; }
+.row .grow { flex: 1; min-width: 0; }
+.row .port { width: 104px; flex: none; }
+
+.modes { border: 0; padding: 0; margin: 0 0 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.modes legend { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; padding: 0; }
+.modes label { position: relative; }
+.modes input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.modes span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--inset);
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.2;
+}
+.modes input:checked + span { border-color: transparent; color: var(--text); background: var(--holo-soft); box-shadow: inset 0 0 0 1px #a890ff; }
+.modes input:focus-visible + span { outline: 2px solid #a890ff; outline-offset: 2px; }
+
+.hint { font-size: 12.5px; color: var(--faint); margin-bottom: 14px; line-height: 1.45; }
+.form-error { color: var(--fail-text); font-size: 13px; margin-bottom: 12px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+[hidden] { display: none !important; }
+
+/* ---------- Сообщение внизу ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(calc(-50% - 58px));
+  z-index: 2000;
+  padding: 10px 16px;
+  border-radius: 13px;
+  background: var(--glass-strong);
+  box-shadow: var(--shadow), inset 0 0 0 1px var(--line);
+  font-size: 13px;
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass::before, .pin.is-online .pin-glow { animation: none; }
+  .btn-primary { transition: none; }
+}

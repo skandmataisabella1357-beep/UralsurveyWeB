@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Uralsurvey — станции сети</title>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="theme.js"></script>
+</head>
+<body>
+  <!-- Общий переливчатый градиент для контуров знаков -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="holo-stroke" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#a890ff"/>
+        <stop offset="0.3" stop-color="#f09ccc"/>
+        <stop offset="0.55" stop-color="#ffc48e"/>
+        <stop offset="0.78" stop-color="#86e2c0"/>
+        <stop offset="1" stop-color="#84c8ff"/>
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <section class="map-wrap" aria-label="Карта станций">
+    <div id="map"></div>
+    <div class="map-tint"></div>
+    <canvas id="graticule" aria-hidden="true"></canvas>
+    <p class="map-note glass" id="map-note" hidden></p>
+  </section>
+
+  <header class="topbar glass">
+    <div class="brand">
+      <img class="brand-mark" src="assets/uci-mark.svg" alt="">
+      <span class="brand-name">Uralsurvey</span>
+    </div>
+    <p class="summary" id="summary"></p>
+    <div class="topbar-actions">
+      <button class="btn btn-quiet" id="theme-btn" type="button"></button>
+      <button class="btn btn-quiet" id="demo-btn" type="button">Показать демо-станции</button>
+      <button class="btn btn-primary" id="add-btn" type="button">Добавить станцию</button>
+    </div>
+  </header>
+
+  <nav class="rail glass" aria-label="Станции">
+    <div class="scroll" id="rail"></div>
+    <div class="rail-foot">
+      <img src="assets/uci-mark.svg" alt="">
+      <p><b>УЦИ</b>Уральский центр изысканий</p>
+    </div>
+  </nav>
+
+  <aside class="inspector glass" aria-label="Выбранная станция">
+    <div class="scroll" id="inspector">
+      <div id="ins-head"></div>
+      <div id="ins-position"></div>
+      <div id="ins-sats"></div>
+      <div id="ins-stream"></div>
+      <div id="ins-messages"></div>
+      <div id="ins-log"></div>
+    </div>
+  </aside>
+
+  <dialog class="dialog" id="station-dialog">
+    <form id="station-form" method="dialog" novalidate>
+      <h2 id="dialog-title">Новая станция</h2>
+
+      <label class="field">
+        <span>Название</span>
+        <input name="name" type="text" maxlength="60" autocomplete="off" required>
+      </label>
+
+      <fieldset class="modes">
+        <legend>Как получать поток</legend>
+        <label><input type="radio" name="mode" value="tcp" checked><span>Подключиться к порту</span></label>
+        <label><input type="radio" name="mode" value="ntrip"><span>NTRIP-кастер</span></label>
+        <label><input type="radio" name="mode" value="listen"><span>Ждать приёмник</span></label>
+      </fieldset>
+      <p class="hint" id="mode-hint"></p>
+
+      <div class="row">
+        <label class="field grow" data-modes="tcp ntrip">
+          <span>Адрес</span>
+          <input name="host" type="text" autocomplete="off" placeholder="IP-адрес или имя узла">
+        </label>
+        <label class="field port">
+          <span>Порт</span>
+          <input name="port" type="text" inputmode="numeric" autocomplete="off">
+        </label>
+      </div>
+
+      <label class="field" data-modes="ntrip">
+        <span>Точка подключения</span>
+        <input name="mountpoint" type="text" autocomplete="off">
+      </label>
+      <div class="row" data-modes="ntrip">
+        <label class="field grow">
+          <span>Логин</span>
+          <input name="username" type="text" autocomplete="off">
+        </label>
+        <label class="field grow">
+          <span>Пароль</span>
+          <input name="password" type="password" autocomplete="new-password">
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Раздавать поток дальше — порт на этом компьютере</span>
+        <input name="relayPort" type="text" inputmode="numeric" autocomplete="off" placeholder="не раздавать">
+      </label>
+      <p class="hint">Другие программы на этом компьютере смогут брать тот же поток с адреса 127.0.0.1 и этого порта. Нужно, когда приёмник отдаёт данные только одному клиенту.</p>
+
+      <p class="form-error" id="form-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" type="button" id="dialog-cancel">Отмена</button>
+        <button class="btn btn-primary" type="submit" id="dialog-save">Сохранить и подключить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="format.js"></script>
+  <script src="map.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
