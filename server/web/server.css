@@ -25,3 +25,5 @@ body.srv { overflow: auto; user-select: text; }
 @media (max-width: 720px) {
   .srv-services { grid-template-columns: 1fr; }
 }
+
+.srv-link { display: inline-flex; align-items: center; text-decoration: none; }

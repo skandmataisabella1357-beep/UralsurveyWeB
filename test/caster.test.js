@@ -439,3 +439,33 @@ test('раздача без логина разрешена только на с
     await b.stop();
   }
 });
+
+test('точка подсети: координаты базы свои, наблюдения и обычная точка не меняются', async () => {
+  const own = [1499265.1234, 3031598.5678, 5389561.0001];
+  const b = await bench({ mountpoints: [{ name: 'TOUR', station: 'TOUR' }, { name: 'EKB_TOUR', station: 'TOUR', position: own, stationId: 21 }] });
+  try {
+    const plain = rover(b.port, { path: '/TOUR', user: 'ivan', password: 'pass-ivan' });
+    const subnet = rover(b.port, { path: '/EKB_TOUR', user: 'two', password: 'p2' });
+    await until(() => b.service.sessions.size === 2);
+    const next = obs(2000);
+    b.feed('TOUR', POSITION, next);
+    const frames = (c) => new StreamParser().push(c.body()).filter((f) => f.kind === 'rtcm');
+    await until(() => frames(plain).filter((f) => f.type === 1074).length >= 1 && frames(subnet).filter((f) => f.type === 1005).length >= 2);
+    const positions = (c) => frames(c).filter((f) => f.type === 1005).map((f) => rtcm.decodePosition(f.payload));
+    for (const p of positions(plain)) assert.deepEqual(p.ecef, [1499264.8225, 3031597.7404, 5389560.6973]);
+    for (const p of positions(subnet)) {
+      assert.deepEqual(p.ecef, own);
+      assert.equal(p.stationId, 21);
+    }
+    // Наблюдения у точки подсети — те же байты, отличается только номер станции
+    const mine = frames(subnet).filter((f) => f.type === 1074).pop();
+    const copy = Buffer.from(next);
+    rtcm.restamp(copy, 21);
+    assert.deepEqual(rtcm.frame(mine.payload), copy);
+    assert.equal((await b.state()).points.find((p) => p.name === 'EKB_TOUR').ownPosition, true);
+    plain.end();
+    subnet.end();
+  } finally {
+    await b.stop();
+  }
+});

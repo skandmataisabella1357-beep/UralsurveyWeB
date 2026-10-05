@@ -1,0 +1,289 @@
+/* Панель администратора: разделы плитками слева, содержимое справа, карточка станции сбоку */
+
+.adm-login { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; }
+.adm-login-card { position: static; width: min(380px, 100%); }
+.adm-login-card h2 { text-align: center; margin-bottom: 8px; }
+.adm-login-card .hint { text-align: center; }
+.adm-login-card .btn { display: inline-flex; align-items: center; text-decoration: none; }
+
+.adm-app { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 12px; padding: 0 12px 24px; max-width: 1500px; margin: 0 auto; }
+.adm-app > .topbar { grid-column: 1 / -1; margin: 10px 0 0; }
+.adm-app.has-detail { grid-template-columns: 148px minmax(0, 1fr) 330px; }
+
+.adm-nav { position: sticky; top: 66px; align-self: start; padding: 6px; border-radius: 16px; display: grid; gap: 5px; }
+/* Раздел — одна строка: значок, название, счётчик справа */
+.adm-nav .tile { width: 100%; height: 32px; flex-direction: row; align-items: center; justify-content: flex-start; gap: 7px; padding: 0 8px; }
+.adm-nav .tile svg { width: 15px; height: 15px; }
+.adm-nav .tile span { min-height: 0; flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adm-nav .tile b { flex: none; font-family: var(--figures); font-weight: 350; font-size: 9.5px; color: var(--faint); }
+.adm-nav .tile[aria-current='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; box-shadow: inset 0 0 0 1px #a890ff; }
+
+.adm-main { min-width: 0; display: grid; gap: 12px; align-content: start; }
+.adm-view { display: grid; gap: 12px; }
+.adm-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.adm-figure { position: relative; padding: 12px 15px; border-radius: 16px; }
+.adm-figure b { display: block; font-family: var(--figures); font-weight: 350; font-size: 22px; letter-spacing: -0.03em; }
+.adm-figure span { font-size: 11.5px; color: var(--muted); }
+
+.adm-map { position: relative; height: 340px; border-radius: 18px; overflow: hidden; }
+.adm-map #map { position: absolute; inset: 1px; border-radius: 17px; }
+.adm-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--faint); border: 2px solid var(--pin-fill); box-shadow: 0 0 0 1px var(--line); }
+.adm-dot.is-online { background: var(--flow); }
+.adm-dot.is-wait { background: var(--wait); }
+.adm-dot.is-fail { background: var(--fail); }
+.adm-dot.is-picked { box-shadow: 0 0 0 2px #a890ff, 0 0 0 5px color-mix(in srgb, #a890ff 30%, transparent); }
+
+.adm-rows tbody tr { cursor: pointer; }
+.adm-rows tbody tr:hover td { background: var(--hover); }
+.adm-rows tbody tr[aria-selected='true'] td { background: var(--holo-soft); }
+/* Таблицы панели: все столбцы от левого края, один размер шрифта, ровные отступы */
+.adm-rows th, .adm-rows td, .adm-rows th:nth-child(n+3), .adm-rows td:nth-child(n+3) { text-align: left; font-size: 11.5px; padding: 6px 18px 6px 0; }
+.adm-rows th, .adm-rows th:nth-child(n+3) { font-size: 10.5px; padding-top: 0; padding-bottom: 6px; }
+.adm-rows td:first-child { width: auto; font-size: 11.5px; }
+.adm-rows td:nth-child(2) { color: var(--text); }
+.adm-rows th:first-child, .adm-rows td:first-child { padding-left: 8px; }
+.adm-rows th:last-child, .adm-rows td:last-child { padding-right: 8px; }
+.srv-table td, .srv-table th { white-space: nowrap; }
+.srv-table td.wrap { white-space: normal; }
+
+.adm-detail { position: sticky; top: 66px; align-self: start; max-height: calc(100vh - 82px); overflow-y: auto; border-radius: 18px; padding: 2px 0 14px; user-select: text; }
+.adm-detail .adm-close { position: absolute; top: 9px; right: 9px; }
+
+@media (max-width: 1100px) {
+  .adm-app, .adm-app.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .adm-nav { position: static; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .adm-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .adm-detail { position: static; max-height: none; }
+}
+
+/* Разделы с таблицами и формами */
+.adm-nav { max-height: calc(100vh - 82px); overflow-y: auto; }
+.adm-who { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.adm-list-head { cursor: default; align-items: center; }
+.adm-list-tools { display: inline-flex; align-items: center; gap: 8px; }
+.adm-list-tools .btn { display: inline-flex; align-items: center; text-decoration: none; }
+.adm-search { height: 25px; width: 170px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); font: inherit; font-size: 11.5px; color: var(--text); }
+.adm-scroll { overflow-x: auto; }
+.adm-json { color: var(--muted); font-size: 10.5px; white-space: normal; }
+.adm-setting { width: 90px; height: 25px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); font: inherit; font-family: var(--figures); font-size: 11px; color: var(--text); }
+.srv-table .is-online { color: var(--flow); }
+.srv-table .is-fail { color: var(--fail-text); }
+.srv-table .is-wait { color: var(--wait-text); }
+
+.adm-dialog { width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 40px); overflow-y: auto; padding: 20px 22px 18px; }
+.adm-dialog h2 { font-size: 16px; margin-bottom: 14px; }
+.adm-dialog .field { margin-bottom: 10px; }
+.adm-dialog .field input, .adm-dialog .field select, .adm-dialog .field textarea {
+  width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--inset); font: inherit; font-size: 12.5px; color: var(--text); user-select: text;
+}
+.adm-dialog .field textarea { height: auto; padding: 7px 10px; resize: vertical; }
+.adm-dialog .field select option { color: #2b2652; }
+.adm-dialog .field small { display: block; margin-top: 3px; font-size: 10.5px; color: var(--faint); }
+.adm-dialog .adm-coord input { font-family: var(--figures); font-size: 12px; }
+.adm-check { display: flex; align-items: center; gap: 8px; margin: 0 0 9px; font-size: 12.5px; cursor: pointer; }
+.adm-check input { width: 15px; height: 15px; accent-color: #a890ff; }
+.adm-multi { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px 2px; margin: 0 0 10px; }
+.adm-multi legend { font-size: 11.5px; color: var(--muted); padding: 0 4px; }
+.adm-control { margin: 0 0 10px; padding: 0; }
+.adm-control .facts { padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--inset); }
+.adm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.adm-grow { flex: 1; }
+.adm-dialog .dialog-actions { align-items: center; }
+#form-note { color: var(--text); background: var(--holo-soft); border-radius: 10px; padding: 8px 10px; user-select: text; }
+
+/* Подсети: окно с плитками шагов, выбор подсети, формы шагов */
+.adm-steps { width: min(380px, calc(100vw - 24px)); padding: 18px 18px 16px; }
+.adm-steps h2 { font-size: 15px; margin-bottom: 12px; }
+.adm-steps-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.adm-steps .tile { width: 100%; height: 68px; }
+.adm-steps .tile[aria-current='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; box-shadow: inset 0 0 0 1px #a890ff; }
+.adm-chip { height: 25px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); color: var(--muted); font: inherit; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.adm-chip:hover, .adm-chip[aria-current='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; }
+.adm-chip[aria-current='true'] { box-shadow: inset 0 0 0 1px #a890ff; }
+#sub-box .adm-list-tools { flex-wrap: wrap; justify-content: flex-end; }
+.adm-sub-form { display: grid; align-items: end; grid-template-columns: 220px minmax(0, 1fr); gap: 10px; margin-bottom: 10px; }
+.adm-sub-form.is-ref { grid-template-columns: 180px repeat(3, minmax(0, 1fr)); }
+.adm-sub-form .field { margin: 0; }
+.adm-sub-form .field input, .adm-sub-form .field select {
+  width: 100%; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--inset); font: inherit; font-size: 12px; color: var(--text); user-select: text;
+}
+.adm-sub-form .field select option { color: #2b2652; }
+.adm-sub-form .adm-coord input { font-family: var(--figures); }
+.adm-sub-stations { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 2px 10px; margin: 8px 0 12px; }
+.adm-sub-stations .adm-check { margin: 0; font-size: 11.5px; }
+#sub-box .dialog-actions { align-items: center; gap: 10px; }
+#sub-box .hint { margin: 6px 0; }
+.adm-static tbody tr { cursor: default; }
+.adm-note { color: var(--faint); font-size: 10.5px; }
+@media (max-width: 1100px) {
+  .adm-sub-form, .adm-sub-form.is-ref { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Окна: карточка станции, шаги подсети, настройка */
+.adm-card { width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 40px); overflow-y: auto; padding: 4px 0 14px; user-select: text; }
+.adm-card .adm-close, #sub-dialog .adm-close { position: absolute; top: 10px; right: 10px; }
+.adm-card h2 { font-size: inherit; margin-bottom: 8px; }
+.adm-card .ins-title { font-size: 11.5px; font-weight: 450; }
+#sub-dialog { width: min(560px, calc(100vw - 24px)); }
+#sub-dialog.adm-wide { width: min(1240px, calc(100vw - 24px)); }
+#sub-dialog > h2 { display: flex; align-items: center; gap: 12px; padding-right: 34px; }
+#sub-dialog th, #sub-dialog td { font-weight: 350; }
+#sub-dialog .hint { margin: 6px 0; }
+#sub-dialog .dialog-actions { align-items: center; gap: 10px; }
+.adm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.adm-steps .tile:disabled { opacity: 0.4; cursor: default; }
+.adm-draw { position: absolute; z-index: 1100; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--glass-strong); backdrop-filter: blur(10px); font-size: 11.5px; white-space: nowrap; }
+.adm-draw[hidden] { display: none; }
+button.adm-figure { border: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.adm-figure:hover { box-shadow: inset 0 0 0 1px #a890ff; }
+#list-body tr[data-row] { cursor: pointer; }
+
+/* Качество векторов расчёта: шкала на карте и метка в таблице */
+.adm-legend { position: absolute; z-index: 1100; left: 10px; bottom: 10px; display: flex; align-items: center; gap: 7px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--glass-strong); backdrop-filter: blur(10px); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.adm-legend[hidden] { display: none; }
+.adm-legend #map-legend-name { color: var(--text); margin-right: 4px; }
+.adm-legend i { width: 110px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, hsl(0 85% 55%), hsl(35 85% 55%), hsl(70 85% 55%), hsl(105 85% 55%), hsl(140 85% 55%)); }
+.adm-q { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+
+/* Ход расчёта подсети */
+#run-dialog { width: min(560px, calc(100vw - 24px)); }
+#run-dialog .adm-close { position: absolute; top: 10px; right: 10px; }
+.adm-progress { height: 6px; border-radius: 3px; background: var(--inset); border: 1px solid var(--line); overflow: hidden; margin: 8px 0 12px; }
+.adm-progress i { display: block; height: 100%; width: 2%; border-radius: 3px; background: linear-gradient(90deg, #a890ff, #6fd6c8); transition: width 0.6s ease; }
+.adm-progress i.is-done { background: var(--flow); }
+.adm-run-log { max-height: 46vh; overflow-y: auto; margin: 0 0 10px; user-select: text; }
+
+/* Названия групп разделов слева */
+.adm-nav-group { margin: 7px 2px 1px; font-size: 9.5px; font-weight: 450; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+@media (max-width: 1100px) { .adm-nav-group { grid-column: 1 / -1; } }
+
+/* Слева — разделы и каталог сети (станции и подсети), как в приложении */
+.adm-app { grid-template-columns: 216px minmax(0, 1fr); }
+.adm-app.has-detail { grid-template-columns: 216px minmax(0, 1fr) 330px; }
+.adm-side { position: sticky; top: 66px; align-self: start; max-height: calc(100vh - 82px); overflow-y: auto; display: grid; gap: 12px; align-content: start; border-radius: 16px; }
+.adm-side .adm-nav { position: static; max-height: none; overflow: visible; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.adm-side .adm-nav .tile { height: 28px; padding: 0 6px; gap: 5px; font-size: 10px; }
+.adm-side .adm-nav .tile svg { width: 13px; height: 13px; }
+.adm-side .adm-nav .tile b { font-size: 9px; }
+.adm-side .adm-nav-group { grid-column: 1 / -1; }
+.adm-rail { padding: 6px; border-radius: 16px; }
+.adm-rail .cat-head { cursor: default; align-items: center; }
+.adm-rail .cat-head > span:first-child { flex: 1; }
+.adm-rail .is-online .station-mark path { stroke: var(--flow); }
+.adm-rail .station-name { font-size: 11.5px; font-family: var(--figures); }
+.adm-plus { width: 18px; height: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--inset); color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer; }
+.adm-plus:hover { color: var(--text); background: var(--holo-soft); border-color: transparent; }
+@media (max-width: 1100px) {
+  .adm-app, .adm-app.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .adm-side { position: static; max-height: none; }
+  .adm-side .adm-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* Большая карта по центру; разделы — незаметная строка значков; каталог сворачивается */
+.adm-map { height: calc(100vh - 92px); min-height: 360px; }
+.adm-side .adm-nav.glass { display: flex; flex-wrap: wrap; gap: 1px; padding: 0 2px; background: none; border: 0; box-shadow: none; backdrop-filter: none; border-radius: 0; }
+.adm-side .adm-nav.glass::before, .adm-side .adm-nav.glass::after { display: none; }
+.adm-side .adm-nav .tile { width: 24px; height: 22px; flex: none; padding: 0; justify-content: center; border: 0; background: none; border-radius: 6px; color: var(--faint); opacity: 0.7; }
+.adm-side .adm-nav .tile:hover { opacity: 1; color: var(--text); background: var(--hover); }
+.adm-side .adm-nav .tile[aria-current='true'] { opacity: 1; color: var(--text); background: var(--holo-soft); box-shadow: none; }
+.adm-side .adm-nav .tile svg { width: 13px; height: 13px; }
+.adm-side { gap: 6px; }
+.adm-rail .cat-head { cursor: pointer; gap: 6px; }
+.adm-twist { width: 0; height: 0; flex: none; border-left: 4px solid currentColor; border-top: 3px solid transparent; border-bottom: 3px solid transparent; opacity: 0.55; transition: transform 0.12s ease; }
+[aria-expanded='true'] > .adm-twist, .adm-twist[aria-expanded='true'] { transform: rotate(90deg); }
+.adm-rail .station.is-group { grid-template-columns: 14px minmax(0, 1fr) auto; }
+.adm-rail .station.is-group .adm-twist { justify-self: center; padding: 0; color: var(--muted); }
+.adm-rail .station.is-group .adm-twist::after { content: ''; position: absolute; left: 0; top: 0; width: 26px; height: 100%; }
+@media (max-width: 1100px) { .adm-map { height: 60vh; } }
+
+/* ---------- Экран как в приложении: карта на весь экран, панели плавают поверх ---------- */
+body.adm { overflow: hidden; }
+.topbar .adm-nav { display: flex; gap: 1px; flex: none; }
+.topbar .adm-nav .tile { width: 24px; height: 24px; flex: none; padding: 0; justify-content: center; border: 0; background: none; border-radius: 6px; color: var(--faint); opacity: 0.75; }
+.topbar .adm-nav .tile:hover { opacity: 1; color: var(--text); background: var(--hover); }
+.topbar .adm-nav .tile[aria-current='true'] { opacity: 1; color: var(--text); background: var(--holo-soft); box-shadow: none; }
+.topbar .adm-nav .tile svg { width: 14px; height: 14px; }
+.rail .cat-head { cursor: pointer; gap: 6px; align-items: center; }
+.rail .cat-head > span:first-of-type { flex: 1; }
+.rail .station.is-group { grid-template-columns: 14px minmax(0, 1fr) auto; }
+.rail .station.is-group .adm-twist { justify-self: center; color: var(--muted); }
+.rail .station.is-group .adm-twist::after { content: ''; position: absolute; left: 0; top: 0; width: 26px; height: 100%; }
+.rail .station-name { font-family: var(--figures); font-size: 12px; }
+.inspector .adm-close { position: absolute; top: 9px; right: 9px; z-index: 2; }
+.adm-float { position: absolute; z-index: 9; top: 64px; bottom: 12px; left: 272px; right: 12px; overflow-y: auto; display: grid; gap: 12px; align-content: start; border-radius: 18px; user-select: text; }
+.adm-float[hidden] { display: none; }
+.adm-float .srv-panel, .adm-float .srv-tile, .adm-float .adm-figure { position: relative; }
+.adm-draw.glass { position: absolute; z-index: 1100; top: 68px; left: 50%; transform: translateX(calc(-50% - 46px)); }
+.adm-legend { z-index: 1100; left: 284px; bottom: 34px; }
+.adm-map { height: auto; }
+
+/* Лента разделов: одна вертикальная полоса значков слева; каталог сети — правее неё */
+.adm-ribbon.glass { position: absolute; z-index: 10; top: 64px; bottom: 12px; left: 12px; width: 44px; padding: 6px 5px; border-radius: 16px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+.adm-ribbon .tile { width: 32px; height: 32px; flex: none; padding: 0; justify-content: center; border: 0; background: none; border-radius: 9px; color: var(--muted); }
+.adm-ribbon .tile:hover { color: var(--text); background: var(--hover); }
+.adm-ribbon .tile[aria-current='true'] { color: var(--text); background: var(--holo-soft); box-shadow: inset 0 0 0 1px #a890ff; }
+.adm-ribbon .tile svg { width: 18px; height: 18px; }
+body.adm .rail { left: 64px; }
+body.adm .leaflet-bottom.leaflet-left { left: 324px; }
+.adm-float { left: 324px; }
+.adm-legend { left: 336px; }
+
+/* Отображение карты */
+.adm-ribbon .adm-ribbon-end { margin-top: auto; }
+body.hide-labels .pin-label { display: none; }
+body.hide-grid #graticule { display: none; }
+.adm-view { width: min(430px, calc(100vw - 24px)); }
+.adm-view-grid .tile[aria-checked='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; box-shadow: inset 0 0 0 1px #a890ff; }
+.adm-view-grid .tile[aria-checked='false'] { opacity: 0.6; }
+.adm-view-radii { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 12px 0 4px; }
+.adm-net-label { background: none; border: 0; box-shadow: none; color: #cdbfff; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; }
+.adm-net-label::before { display: none; }
+
+/* Переключатели отображения внизу ленты */
+.adm-ribbon-gap { flex: 1; min-height: 10px; }
+.adm-ribbon .adm-show { width: 32px; height: 28px; opacity: 0.45; }
+.adm-ribbon .adm-show svg { width: 15px; height: 15px; }
+.adm-ribbon .adm-show[aria-checked='true'] { opacity: 1; color: var(--text); }
+
+/* Знаки станций — сияющие точки: зелёная на связи, красная без связи, янтарная ждёт */
+body.adm .pin svg { display: none; }
+body.adm .pin { --dot: #8a86a8; }
+body.adm .pin.is-online { --dot: #5df2b0; }
+body.adm .pin.is-fail { --dot: #ff5d7d; }
+body.adm .pin.is-wait { --dot: #ffc56b; }
+body.adm .pin::before { content: ''; position: absolute; left: 50%; top: 17px; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0%, color-mix(in srgb, var(--dot) 55%, #fff) 18%, var(--dot) 55%, color-mix(in srgb, var(--dot) 70%, #3a2a8a) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot) 60%, transparent), 0 0 8px 2px color-mix(in srgb, var(--dot) 70%, transparent), 0 0 22px 7px color-mix(in srgb, var(--dot) 28%, transparent); }
+body.adm .pin::after { content: ''; position: absolute; left: 50%; top: 17px; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
+  background: conic-gradient(from 0deg, #a890ff55, #f09ccc44, #ffc48e44, #86e2c055, #84c8ff55, #a890ff55); filter: blur(5px); opacity: 0.55; animation: adm-halo 6s linear infinite; pointer-events: none; }
+body.adm .pin.is-fail::after { background: radial-gradient(circle, #ff5d7d66, transparent 70%); animation: adm-pulse 2.4s ease-in-out infinite; }
+body.adm .pin .pin-glow { display: none; }
+@keyframes adm-halo { to { transform: rotate(360deg); } }
+@keyframes adm-pulse { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 0.7; transform: scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { body.adm .pin::after { animation: none; } }
+
+/* Швы между плитками подложки: плитки чуть перекрывают друг друга, тёмных линий между ними нет */
+body.adm .leaflet-tile-container img.leaflet-tile { width: 257px !important; height: 257px !important; }
+
+/* Подложка: фильтр — на каждой плитке, а не на всём слое, иначе браузер при дробном масштабе
+   экрана рисует по слою тёмные линии, похожие на сетку */
+body.adm .leaflet-tile-pane { filter: none; }
+body.adm img.leaflet-tile { filter: var(--tiles); }
+
+/* Градусная сетка: тонкая неоновая, неяркая */
+html:has(body.adm) { --grid: rgba(110, 255, 214, 0.2); --grid-text: rgba(150, 255, 226, 0.5); }
+body.adm #graticule { filter: drop-shadow(0 0 2px rgba(93, 242, 176, 0.55)); }
+
+/* Всплывающее окно у значков ленты */
+.adm-tip.glass { position: absolute; z-index: 30; width: 270px; padding: 11px 13px 10px; border-radius: 14px; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.adm-tip[hidden] { display: none; }
+.adm-tip b { color: var(--text); font-size: 12.5px; font-weight: 500; }
+.adm-tip p { margin-top: 5px; }
+.adm-tip-state { float: right; font-size: 10px; color: var(--faint); }
+.adm-tip-state.is-on { color: var(--flow); }
+.adm-tip-row { display: grid; gap: 5px; margin-top: 8px; }
+.adm-tip-row .adm-chip { display: flex; align-items: center; gap: 7px; width: 100%; height: 27px; opacity: 0.55; }
+.adm-tip-row .adm-chip[aria-current='true'] { opacity: 1; }
+.adm-tip-row .adm-chip i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 7px 1px currentColor; }

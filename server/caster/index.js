@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { StreamParser } = require('../../core/stream');
 const { ecefToLlh, R2D } = require('../../core/geo');
 const { BusClient } = require('../shared/bus');
+const { Directory } = require('../shared/directory');
 const { jsonServer } = require('../shared/http');
 const { loadConfig } = require('../shared/config');
 const rtcm = require('../rtcm/messages');
@@ -49,7 +50,9 @@ function sameText(a, b) {
   return crypto.timingSafeEqual(x, y);
 }
 
-async function start({ config, secrets = {}, log = console.log, rules = {} }) {
+// directoryUrl — адрес службы управления: тогда точки и логины берутся из базы и меняются на ходу,
+// а сеансы и отказы уходят в её журнал. Без него раздача работает по файлам настроек.
+async function start({ config, secrets = {}, log = console.log, rules = {}, directoryUrl = process.env.URAL_DIRECTORY || '', directoryKey }) {
   const R = { ...RULES, ...rules };
   const startedAt = Date.now();
   const cfg = config.caster;
@@ -59,7 +62,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
   if (cfg.openAccess && !loopback) {
     throw new Error('Раздача без проверки логина (caster.openAccess) разрешена только на адресе 127.0.0.1.');
   }
-  const users = secrets.users || {};
+  let users = secrets.users || {};
 
   // ---------- Потоки станций ----------
 
@@ -79,23 +82,44 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
   // ---------- Точки подключения ----------
 
   const points = new Map(); // имя точки -> точка
-  const defined = config.mountpoints || config.stations.map((s) => ({ name: s.code, station: s.code }));
-  for (const p of defined) {
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(p.name || '')) throw new Error(`Точка подключения «${p.name}»: имя — латинские буквы, цифры, «_» и «-», до 32 знаков.`);
-    if (points.has(p.name)) throw new Error(`Точка подключения ${p.name} заведена дважды.`);
-    const station = config.stations.find((s) => s.code === p.station);
-    if (!station) throw new Error(`Точка подключения ${p.name}: станции ${p.station} нет в настройках.`);
-    const point = {
-      name: p.name,
-      feed: feedOf(station.code, station.name),
-      stationId: Number.isInteger(p.stationId) ? p.stationId : null, // номер станции в потоке; null — как пришло
-      listed: p.listed !== false,
-      enabled: p.enabled !== false,
-      access: Array.isArray(p.access) ? p.access : null, // null — все логины с доступом
-      sessions: new Set(),
-    };
-    points.set(p.name, point);
-    point.feed.points.push(point);
+  // Приводит набор точек к заданному. Точка с тем же именем сохраняет свои сеансы;
+  // сеансы исчезнувших, выключенных и переведённых на другую станцию точек закрываются.
+  function setPoints(defined, stations) {
+    const next = new Map();
+    for (const p of defined) {
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(p.name || '')) throw new Error(`Точка подключения «${p.name}»: имя — латинские буквы, цифры, «_» и «-», до 32 знаков.`);
+      if (next.has(p.name)) throw new Error(`Точка подключения ${p.name} заведена дважды.`);
+      const station = stations.find((st) => st.code === p.station);
+      if (!station) throw new Error(`Точка подключения ${p.name}: станции ${p.station} нет в настройках.`);
+      const old = points.get(p.name);
+      const feed = feedOf(station.code, station.name);
+      const keep = old && old.feed === feed && p.enabled !== false;
+      if (old && !keep) {
+        for (const session of [...old.sessions]) close(session, p.enabled === false ? 'точка подключения выключена' : 'точка подключения переведена на другую станцию');
+      }
+      next.set(p.name, {
+        name: p.name,
+        feed,
+        stationId: Number.isInteger(p.stationId) ? p.stationId : null, // номер станции в потоке; null — как пришло
+        // Свои координаты базы для этой точки (точка подсети); null — как пришло от станции
+        position: Array.isArray(p.position) && p.position.length === 3 && p.position.every(Number.isFinite) ? p.position : null,
+        positionFrame: null,
+        listed: p.listed !== false,
+        enabled: p.enabled !== false,
+        access: Array.isArray(p.access) ? p.access : null, // null — все логины с доступом
+        sessions: keep ? old.sessions : new Set(),
+      });
+    }
+    for (const [name, old] of points) {
+      if (!next.has(name)) for (const session of [...old.sessions]) close(session, 'точка подключения удалена');
+    }
+    points.clear();
+    for (const feed of feeds.values()) feed.points = [];
+    for (const [name, point] of next) {
+      points.set(name, point);
+      point.feed.points.push(point);
+      for (const session of point.sessions) session.point = point;
+    }
   }
 
   // ---------- Приём с шины и выдача ----------
@@ -103,6 +127,15 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
   const sessions = new Set();
   const refusals = []; // последние отказы, для администратора
   let seq = 0;
+  const bootId = Date.now().toString(36); // номера сеансов не повторяются после перезапуска службы
+  const journal = []; // события для журнала сеансов в базе
+  const record = (event) => {
+    if (!directoryUrl) return;
+    journal.push({ at: Date.now(), ...event });
+    if (journal.length > 20000) journal.shift();
+  };
+  const where = (s) => (s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind } : null);
+  setPoints(config.mountpoints || config.stations.map((st) => ({ name: st.code, station: st.code })), config.stations);
 
   function close(session, reason) {
     if (session.closed) return;
@@ -111,6 +144,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     session.point.sessions.delete(session);
     sessions.delete(session);
     session.socket.destroy();
+    record({ t: 'close', id: session.id, login: session.login, bytes: session.bytes, reason, position: where(session), first: session.firstGga && { lat: session.firstGga.lat, lon: session.firstGga.lon } });
   }
 
   function send(session, plain, chunked) {
@@ -126,17 +160,30 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     socket.write(data);
   }
 
+  // Кадр в том виде, в каком его получает ровер этой точки: со своим номером станции и,
+  // у точки подсети, со своими координатами базы. Наблюдения не меняются.
+  function adapt(point, f) {
+    let out = f;
+    const type = rtcm.frameType(f);
+    if (point.position && (type === 1005 || type === 1006)) {
+      const cached = point.positionFrame;
+      if (cached && cached.source.equals(f)) out = cached.frame;
+      else {
+        out = rtcm.encodePosition({ ...rtcm.decodePosition(f.subarray(3, f.length - 3)), ecef: point.position });
+        point.positionFrame = { source: f, frame: out };
+      }
+    }
+    if (point.stationId !== null) {
+      out = Buffer.from(out);
+      rtcm.restamp(out, point.stationId);
+    }
+    return out;
+  }
+
   // Кадры одной порции отдаются одной записью на сеанс; для версии 2 обёртка строится один раз на точку
   function deliver(point, frames) {
     if (!point.sessions.size) return;
-    let list = frames;
-    if (point.stationId !== null) {
-      list = frames.map((f) => {
-        const copy = Buffer.from(f);
-        rtcm.restamp(copy, point.stationId);
-        return copy;
-      });
-    }
+    const list = point.stationId !== null || point.position ? frames.map((f) => adapt(point, f)) : frames;
     const plain = list.length === 1 ? list[0] : Buffer.concat(list);
     let chunked = null;
     for (const session of point.sessions) {
@@ -229,6 +276,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
   function refuse(socket, req, code, reason, login) {
     refusals.push({ at: Date.now(), login: login || null, point: req ? req.path : null, code, reason });
     if (refusals.length > 200) refusals.shift();
+    record({ t: 'refusal', login: login || '', point: req ? req.path : '', code, reason, address: socket.remoteAddress || '' });
     if (code === null) socket.destroy();
     else socket.end(ntrip.refusal(req.version, code));
   }
@@ -263,6 +311,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     const point = points.get(req.path);
     if (!point || !point.enabled) {
       refusals.push({ at: now, login: req.user || null, point: req.path, code: 404, reason: 'такой точки нет' });
+      record({ t: 'refusal', login: req.user || '', point: req.path, code: 404, reason: 'такой точки нет', address: ip });
       // Версия 1 в ответ на незнакомую точку получает таблицу источников
       socket.end(req.version === 2 ? ntrip.refusal(2, 404) : ntrip.sourcetableResponse(1, liveTable()));
       return;
@@ -305,7 +354,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     if (now - feed.lastAt > R.stationLiveMs) return refuse(socket, req, 503, 'станция не на связи', login);
 
     const session = {
-      id: ++seq, socket, login, point, ip, version: req.version, agent: req.agent,
+      id: `${bootId}-${++seq}`, socket, login, point, ip, version: req.version, agent: req.agent,
       startedAt: now, bytes: 0, gga: null, ggaAt: 0, firstGga: null, closed: false, endReason: null, text: '',
     };
     socket.setNoDelay(true); // кадр уходит сразу, без склейки пакетов
@@ -316,12 +365,9 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     const service = [1005, 1006, 1007, 1008, 1033, 1230].map((t) => feed.service.get(t)).filter(Boolean);
     sessions.add(session);
     point.sessions.add(session);
+    record({ t: 'open', id: session.id, login, point: point.name, station: feed.code, address: ip, agent: req.agent, version: req.version });
     if (service.length) {
-      const list = point.stationId === null ? service : service.map((f) => {
-        const copy = Buffer.from(f);
-        rtcm.restamp(copy, point.stationId);
-        return copy;
-      });
+      const list = service.map((f) => adapt(point, f));
       const plain = Buffer.concat(list);
       send(session, plain, req.version === 2 ? ntrip.chunk(plain) : null);
     }
@@ -346,6 +392,50 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     if (req.rest.length) onText(req.rest);
     socket.on('data', onText);
     socket.on('close', () => close(session, session.endReason || 'ровер отключился'));
+  }
+
+  // ---------- Справочник из базы и журнал сеансов ----------
+
+  let directory = null;
+  let flushTimer = null;
+  let sending = false;
+  function applyDirectory(dir) {
+    try {
+      // Сеансы логинов, которые удалены, отключены или сменили пароль, закрываются сразу
+      for (const s of [...sessions]) {
+        const now = dir.users[s.login];
+        const was = users[s.login];
+        if (!now || now.active === false) close(s, 'логин отключён или удалён');
+        else if (was && was.password !== now.password) close(s, 'сменён пароль логина');
+      }
+      users = dir.users;
+      if (dir.rules && Number.isFinite(dir.rules.stationLostMs)) R.stationLostMs = dir.rules.stationLostMs;
+      setPoints(dir.mountpoints, dir.stations);
+      log(`раздача: справочник из базы — точек ${dir.mountpoints.length}, логинов ${Object.keys(dir.users).length}`);
+    } catch (err) {
+      log(`раздача: справочник из базы не применён — ${err.message}`);
+    }
+  }
+  async function flush() {
+    if (sending) return;
+    sending = true;
+    try {
+      // Раз в несколько секунд — объём и положение открытых сеансов, чтобы журнал не отставал
+      const batch = journal.splice(0, 2000);
+      for (const s of sessions) batch.push({ t: 'update', id: s.id, at: Date.now(), bytes: s.bytes, position: where(s), first: s.firstGga && { lat: s.firstGga.lat, lon: s.firstGga.lon } });
+      const ok = await directory.send(batch, [...sessions].map((s) => s.id));
+      // Управление недоступно: события не теряем, отправим в следующий раз
+      if (!ok) journal.unshift(...batch.filter((e) => e.t !== 'update'));
+    } finally {
+      sending = false;
+    }
+  }
+  if (directoryUrl) {
+    directory = new Directory({ url: directoryUrl, key: directoryKey });
+    directory.on('update', applyDirectory);
+    directory.start();
+    flushTimer = setInterval(flush, 3000);
+    if (flushTimer.unref) flushTimer.unref();
   }
 
   // ---------- Порт для роверов ----------
@@ -412,7 +502,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
         sessions: sessions.size,
         feeds: [...feeds.values()].map((f) => ({ station: f.code, name: f.name, bytes: f.bytes, lastDataAgeMs: f.lastAt ? now - f.lastAt : null })),
         points: [...points.values()].map((p) => ({
-          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed,
+          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed, ownPosition: Boolean(p.position),
           live: now - p.feed.lastAt <= R.stationLiveMs, sessions: p.sessions.size,
         })),
         clients: [...sessions].map((s) => ({
@@ -421,7 +511,15 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
           position: s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind, sats: s.gga.sats, age: s.gga.age, at: s.ggaAt } : null,
         })),
         refusals: refusals.slice(-50),
+        directory: directory ? { url: directoryUrl, lastOkAgeMs: directory.lastOkAt ? now - directory.lastOkAt : null, pending: journal.length } : null,
       };
+    },
+    // Закрыть сеанс по команде администратора
+    'POST /kick': (url, body) => {
+      const session = [...sessions].find((s) => s.id === String(body.id));
+      if (!session) return { closed: false };
+      close(session, String(body.reason || 'закрыт администратором').slice(0, 200));
+      return { closed: true, login: session.login };
     },
   }, { host: config.bind, port: cfg.statePort });
 
@@ -436,8 +534,11 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     points,
     sessions,
     refusals,
+    flush: () => (directory ? flush() : null),
     async stop() {
       clearInterval(watchdog);
+      clearInterval(flushTimer);
+      if (directory) directory.stop();
       bus.stop();
       for (const s of [...sessions]) close(s, 'служба раздачи остановлена');
       for (const socket of sockets) socket.destroy();

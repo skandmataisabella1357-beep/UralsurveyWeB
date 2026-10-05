@@ -6,3 +6,8 @@ casters.txt
 dist/
 server/config.json
 server/secrets.json
+server/data/
+
+backend/data/
+__pycache__/
+*.pyc

@@ -9,7 +9,8 @@
     "start": "electron .",
     "server": "node server/run.js",
     "testnet": "node server/testnet/run.js",
-    "test": "node --test test/core.test.js test/coordsys.test.js test/subnets.test.js test/skyglobe.test.js test/server.test.js test/rtcm-encode.test.js test/caster.test.js test/testnet.test.js test/gate.test.js",
+    "set-admin": "node server/control/set-admin.js",
+    "test": "node --test test/core.test.js test/coordsys.test.js test/subnets.test.js test/skyglobe.test.js test/server.test.js test/rtcm-encode.test.js test/caster.test.js test/testnet.test.js test/gate.test.js test/admin.test.js test/directory.test.js test/rtknet.test.js",
     "dist:win": "npx --yes electron-builder --win portable",
     "dist:linux": "npx --yes electron-builder --linux AppImage"
   },

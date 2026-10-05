@@ -3,14 +3,35 @@
 
 const http = require('http');
 
-// Сервер, отвечающий JSON по точным путям. routes: { '/state': () => объект }
+function readJson(req, limit = 65536) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) reject(new Error('слишком длинный запрос'));
+      else chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {});
+      } catch (err) {
+        reject(new Error('запрос не читается'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+// Сервер, отвечающий JSON по точным путям. routes: { '/state': () => объект,
+// 'POST /kick': (url, тело) => объект }
 function jsonServer(routes, { host, port, fallback }) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://local');
-    const handler = req.method === 'GET' ? routes[url.pathname] : null;
+    const handler = req.method === 'GET' ? routes[url.pathname] : routes[`${req.method} ${url.pathname}`];
     try {
       if (handler) {
-        const body = JSON.stringify(await handler(url));
+        const body = JSON.stringify(await handler(url, req.method === 'GET' ? null : await readJson(req)));
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(body);
       } else if (fallback) {

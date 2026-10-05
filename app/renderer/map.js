@@ -40,6 +40,8 @@ window.StationMap = (() => {
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '© участники OpenStreetMap',
+      // Сервер плиток отказывает запросам без адреса страницы; на сайте его приходится разрешать явно
+      referrerPolicy: 'strict-origin-when-cross-origin',
     }).addTo(map);
 
     canvas = document.getElementById('graticule');
