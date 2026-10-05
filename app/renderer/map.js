@@ -13,7 +13,7 @@ window.StationMap = (() => {
   let userMoved = false;
   let located = 0;
   // Поля карты, занятые панелями: слева список, справа панель станции, сверху полоса
-  const insets = { left: 320, top: 84, right: 436, bottom: 16 };
+  const insets = { left: 276, top: 64, right: 368, bottom: 12 };
   const pins = new Map(); // id -> { marker, key }
 
   function init(select) {
@@ -198,5 +198,10 @@ window.StationMap = (() => {
     map.fitBounds(L.latLngBounds([p, p]), { ...viewPadding(70), maxZoom: Math.max(map.getZoom(), 11), animate: true });
   }
 
-  return { init, update, focus, fitAll };
+  // Показать заданные точки [широта, долгота] в свободной от панелей части карты
+  function fit(points) {
+    if (points.length) map.fitBounds(L.latLngBounds(points), { ...viewPadding(50), animate: true });
+  }
+
+  return { init, update, focus, fitAll, fit, map: () => map };
 })();

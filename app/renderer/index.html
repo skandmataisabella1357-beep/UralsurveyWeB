@@ -36,15 +36,14 @@
       <span class="brand-name">Uralsurvey</span>
     </div>
     <p class="summary" id="summary"></p>
-    <div class="topbar-actions">
-      <button class="btn btn-quiet" id="theme-btn" type="button"></button>
-      <button class="btn btn-quiet" id="demo-btn" type="button">Показать демо-станции</button>
-      <button class="btn btn-quiet" id="caster-btn" type="button">Точки с кастера</button>
-      <button class="btn btn-primary" id="add-btn" type="button">Добавить станцию</button>
-    </div>
   </header>
 
-  <nav class="rail glass" aria-label="Станции">
+  <nav class="rail glass" aria-label="Каталог сети">
+    <div class="rail-head">
+      <span class="rail-title">Сеть</span>
+      <span class="rail-count fig" id="rail-count"></span>
+      <button class="icon-btn" id="menu-btn" type="button" title="Команды" aria-haspopup="true" aria-expanded="false">+</button>
+    </div>
     <div class="scroll" id="rail"></div>
     <div class="rail-foot">
       <img src="assets/uci-mark.svg" alt="">
@@ -52,7 +51,14 @@
     </div>
   </nav>
 
+  <div class="menu glass" id="menu" role="menu" hidden></div>
+  <div class="menu menu-right glass" id="view-menu" role="menu" hidden></div>
+  <div class="menu menu-ctx glass" id="ctx-menu" role="menu" hidden></div>
+
   <aside class="inspector glass" aria-label="Выбранная станция">
+    <button class="icon-btn" id="view-btn" type="button" title="Отображение" aria-haspopup="true" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+    </button>
     <div class="scroll" id="inspector">
       <div id="ins-head"></div>
       <div id="ins-position"></div>
@@ -156,6 +162,7 @@
       <p class="form-error" id="caster-error" role="alert" hidden></p>
 
       <div class="dialog-actions">
+        <button class="btn btn-quiet" type="button" id="caster-file">Загрузить из файла</button>
         <button class="btn btn-quiet" type="button" id="caster-cancel">Отмена</button>
         <button class="btn btn-primary" type="submit" id="caster-save">Добавить и подключить</button>
       </div>
@@ -166,7 +173,10 @@
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="format.js"></script>
+  <script src="../../modules/coordsys/coordsys.js"></script>
   <script src="map.js"></script>
+  <script src="../../modules/subnets/geometry.js"></script>
+  <script src="../../modules/subnets/subnets.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

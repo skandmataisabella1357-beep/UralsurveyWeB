@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Uralsurvey — спутники</title>
+  <link rel="stylesheet" href="../../app/renderer/styles.css">
+  <link rel="stylesheet" href="globe.css">
+  <script src="../../app/renderer/theme.js"></script>
+</head>
+<body class="sky">
+  <canvas id="globe"></canvas>
+
+  <header class="sky-head glass">
+    <span class="sky-title">Спутники</span>
+    <span class="sky-count fig" id="count"></span>
+    <span class="seg">
+      <button type="button" data-view="globe" aria-pressed="true">Шар</button>
+      <button type="button" data-view="net" aria-pressed="false">Сеть</button>
+    </span>
+  </header>
+
+  <div class="sky-stations glass" id="stations"></div>
+
+  <ul class="sky-legend glass" id="legend"></ul>
+
+  <p class="sky-note glass" id="note">Ждём наблюдения со станций…</p>
+
+  <script src="land.js"></script>
+  <script src="globe.js"></script>
+</body>
+</html>

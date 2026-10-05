@@ -13,6 +13,7 @@ const { parseGga } = require('../core/nmea');
 const { ecefToLlh, llhToEcef, D2R, R2D } = require('../core/geo');
 const { solveEpoch, PositionAverager } = require('../core/spp');
 const { parseNtripResponse, probePort, tunnelName } = require('../core/transport');
+const { parseCasterFile } = require('../core/casterfile');
 const sim = require('../core/simulator');
 const { StationSession } = require('../core/station');
 
@@ -431,4 +432,25 @@ test('раздача: поток уходит подключённым прог�
     session.stop();
     await s.close();
   }
+});
+
+test('список кастеров из текстового файла', () => {
+  const text = [
+    '\uFEFF# адрес:порт логин пароль отбор',
+    '10.0.0.1:2101 user secret',
+    '',
+    'caster.example.org:7066;u2;p2;RTCM30   # своя выборка',
+    'ntrip://10.0.0.3:2101 u3 p3 *',
+    '10.0.0.4:2101',
+    'просто текст',
+    '10.0.0.5:99999 a b',
+  ].join('\r\n');
+  const { casters, errors } = parseCasterFile(text, 'MSM4');
+  assert.deepEqual(casters.map((c) => [c.host, c.port, c.username, c.password, c.filter]), [
+    ['10.0.0.1', 2101, 'user', 'secret', 'MSM4'],
+    ['caster.example.org', 7066, 'u2', 'p2', 'RTCM30'],
+    ['10.0.0.3', 2101, 'u3', 'p3', ''],
+    ['10.0.0.4', 2101, '', '', 'MSM4'],
+  ]);
+  assert.deepEqual(errors.map((e) => e.line), [7, 8]);
 });

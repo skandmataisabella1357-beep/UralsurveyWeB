@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/core.test.js test/coordsys.test.js test/subnets.test.js test/skyglobe.test.js",
     "dist:win": "npx --yes electron-builder --win portable",
     "dist:linux": "npx --yes electron-builder --linux AppImage"
   },
@@ -19,6 +19,7 @@
     "files": [
       "app/**/*",
       "core/**/*",
+      "modules/**/*",
       "package.json"
     ]
   }

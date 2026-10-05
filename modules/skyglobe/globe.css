@@ -1,0 +1,83 @@
+/* Окно «Спутники на шаре»: шар во всё окно, поверх — маленькие плашки.
+   Окно лёгкое: без размытия фона под плашками и без бегущего перелива кромки. */
+
+body.sky { cursor: default; }
+body.sky.is-dragging { cursor: grabbing; }
+.sky .glass { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--glass-strong); box-shadow: none; }
+.sky .glass::before { animation: none; }
+#globe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+.sky-head {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 11px;
+}
+.sky-title { font-size: 12.5px; font-weight: 500; }
+.sky-count { font-size: 10px; color: var(--muted); }
+
+/* Станции сети плитками: щелчок показывает, какие спутники принимает станция */
+.sky-stations {
+  position: absolute;
+  top: 52px;
+  left: 10px;
+  width: 132px;
+  max-height: calc(100% - 190px);
+  overflow-y: auto;
+  padding: 5px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  border-radius: 11px;
+}
+.sky-stations:empty { display: none; }
+.sky-stations button {
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--inset);
+  color: var(--muted);
+  font-family: var(--figures);
+  font-size: 9px;
+  cursor: pointer;
+}
+.sky-stations button:hover { color: var(--text); }
+.sky-stations button[aria-pressed='true'] { color: var(--text); background: var(--holo-soft); border-color: transparent; box-shadow: inset 0 0 0 1px #a890ff; }
+.sky-stations button.is-off { color: var(--fail-text); }
+
+.sky-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 7px 11px;
+  border-radius: 11px;
+  display: grid;
+  grid-template-columns: auto auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.sky-legend li { display: contents; }
+.sky-legend i { width: 7px; height: 7px; border-radius: 50%; }
+.sky-legend b { font-weight: 400; color: var(--text); }
+.sky-legend span { font-family: var(--figures); font-size: 9.5px; text-align: right; }
+
+.sky-note {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  max-width: min(330px, calc(100% - 180px));
+  padding: 7px 11px;
+  border-radius: 11px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}

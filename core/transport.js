@@ -318,7 +318,11 @@ function probePort(host, port, timeoutMs = 6000) {
       if (/^SOURCETABLE 200|gnss\/sourcetable|^STR;/m.test(text)) {
         const mountpoints = text.split(/\r?\n/).filter((l) => l.startsWith('STR;')).map((l) => {
           const f = l.split(';');
-          return { name: f[1], format: f[3] || '', details: f[4] || '', systems: f[6] || '', auth: f[15] || '' };
+          const coord = (v) => (v !== undefined && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+          return {
+            name: f[1], format: f[3] || '', details: f[4] || '', systems: f[6] || '', auth: f[15] || '',
+            lat: coord(f[9]), lon: coord(f[10]), // примерные координаты из таблицы, обычно до 0,01°
+          };
         });
         return { kind: 'caster', mountpoints };
       }
