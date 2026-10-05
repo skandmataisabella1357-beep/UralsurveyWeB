@@ -1,0 +1,27 @@
+/* Страница состояния сервера. Визуал общий с окном: стекло, перелив, обе темы. */
+
+body.srv { overflow: auto; user-select: text; }
+.srv .topbar { position: sticky; margin: 10px 12px 0; left: auto; right: auto; top: 10px; }
+.srv .glass { position: relative; }
+
+.srv-main { max-width: 1040px; margin: 0 auto; padding: 16px 12px 32px; display: grid; gap: 12px; }
+
+.srv-services { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.srv-tile { padding: 13px 15px 14px; border-radius: 16px; }
+.srv-tile h2 { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.srv-tile h2::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--fail); }
+.srv-tile.is-up h2::before { background: var(--flow); box-shadow: 0 0 0 4px color-mix(in srgb, var(--flow) 22%, transparent); }
+.srv-tile.is-part h2::before { background: var(--wait); box-shadow: 0 0 0 4px color-mix(in srgb, var(--wait) 22%, transparent); }
+.srv-tile p { margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.srv-tile p + p { margin-top: 3px; }
+
+.srv-panel { padding: 14px 16px 12px; border-radius: 18px; }
+.srv-table td:first-child { width: auto; font-size: 11.5px; color: var(--text); }
+.srv-table td.is-online { color: var(--flow); }
+.srv-table td.is-fail { color: var(--fail-text); }
+.srv-table td.is-wait { color: var(--wait-text); }
+.srv-table th:nth-child(n+3), .srv-table td:nth-child(n+3) { padding-left: 14px; }
+
+@media (max-width: 720px) {
+  .srv-services { grid-template-columns: 1fr; }
+}

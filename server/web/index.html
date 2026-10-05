@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Uralsurvey — сервер</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+  <link rel="stylesheet" href="server.css">
+  <script src="/ui/theme.js"></script>
+</head>
+<body class="srv">
+  <header class="topbar glass">
+    <div class="brand">
+      <img class="brand-mark" src="/ui/assets/uci-mark.svg" alt="">
+      <span class="brand-name">Uralsurvey</span>
+    </div>
+    <p class="summary" id="summary">Сервер: подключаемся…</p>
+    <button class="btn btn-quiet btn-small" id="theme-btn" type="button"></button>
+  </header>
+
+  <main class="srv-main">
+    <p class="notice" id="example-note" hidden>Сервер запущен на имитаторах станций из образца настроек: настоящая сеть не подключена. Чтобы подключить станции, создайте <span class="fig">server/config.json</span>.</p>
+
+    <section class="srv-services" id="services" aria-label="Службы сервера"></section>
+
+    <section class="srv-panel glass" aria-label="Станции">
+      <h2 class="ins-title"><span>Станции на приёме</span><span class="fig" id="station-count"></span></h2>
+      <table class="messages srv-table">
+        <thead><tr><th>Код</th><th>Название</th><th>Связь</th><th>Спутников</th><th>Поток</th><th>Обрывов</th><th>Сбоев CRC</th><th>У раздачи</th></tr></thead>
+        <tbody id="stations"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/ui/format.js"></script>
+  <script src="server.js"></script>
+</body>
+</html>

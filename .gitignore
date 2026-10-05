@@ -4,3 +4,5 @@ samples/
 casters.txt
 .sync/
 dist/
+server/config.json
+server/secrets.json

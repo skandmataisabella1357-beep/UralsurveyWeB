@@ -1,0 +1,11 @@
+{
+  "bind": "127.0.0.1",
+  "ingest": { "busPort": 7101, "statePort": 7102 },
+  "caster": { "statePort": 7103, "port": 2101, "enabled": true, "openAccess": true },
+  "control": { "port": 8080 },
+  "stations": [
+    { "code": "SIM1", "name": "Имитатор: Екатеринбург", "source": { "mode": "sim", "lat": 56.8389, "lon": 60.6057, "h": 270, "stationId": 901 } },
+    { "code": "SIM2", "name": "Имитатор: Нижний Тагил", "source": { "mode": "sim", "lat": 57.9101, "lon": 59.9813, "h": 220, "stationId": 902 } },
+    { "code": "SIM3", "name": "Имитатор: Каменск-Уральский", "source": { "mode": "sim", "lat": 56.4149, "lon": 61.9189, "h": 170, "stationId": 903 } }
+  ]
+}
