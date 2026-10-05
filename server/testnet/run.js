@@ -7,7 +7,7 @@
 //   npm run testnet -- --target АДРЕС    — только базы, поток уходит на указанный сервер
 //   npm run testnet -- --config          — напечатать настройки сервера под эту сеть
 //
-// Ещё: --count 50, --first-port 2110, --seed 2026, --state http://127.0.0.1:8080
+// Ещё: --count 50, --first-port 2110, --seed 2026, --control-port 8080, --state http://127.0.0.1:8080
 
 const fs = require('fs');
 const os = require('os');
@@ -51,8 +51,8 @@ function report(stations, bases, state) {
   return lines.join('\n');
 }
 
-function main() {
-  const a = args(process.argv.slice(2));
+function main(argv = process.argv.slice(2)) {
+  const a = args(argv);
   const stations = makeStations({
     count: Number(a.count) || 50,
     firstPort: Number(a['first-port']) || 2110,
@@ -66,11 +66,14 @@ function main() {
   }
 
   const local = !a.target;
+  const controlPort = Number(a['control-port']) || 0;
   const host = local ? '127.0.0.1' : String(a.target);
   let server = null;
   if (local) {
     const file = path.join(os.tmpdir(), `uralsurvey-testnet-${process.pid}.json`);
-    fs.writeFileSync(file, JSON.stringify(serverConfig(stations)));
+    const config = serverConfig(stations);
+    if (controlPort) config.control = { port: controlPort };
+    fs.writeFileSync(file, JSON.stringify(config));
     server = fork(path.join(__dirname, '..', 'run.js'), { stdio: 'inherit', env: { ...process.env, URALSURVEY_CONFIG: file } });
     process.on('exit', () => { try { fs.unlinkSync(file); } catch (err) { /* уже убран */ } });
   }
@@ -80,7 +83,7 @@ function main() {
   // Локальному серверу нужно время открыть порты
   setTimeout(() => bases.forEach((b) => b.start()), local ? 2500 : 0);
 
-  const stateUrl = typeof a.state === 'string' ? a.state : (local ? 'http://127.0.0.1:8080' : null);
+  const stateUrl = typeof a.state === 'string' ? a.state : (local ? `http://127.0.0.1:${controlPort || 8080}` : null);
   const timer = setInterval(async () => {
     const state = stateUrl ? await getJson(`${stateUrl}/api/state`, 3000) : null;
     console.log(`\n${new Date().toLocaleTimeString('ru-RU')}\n${report(stations, bases, state)}`);
@@ -98,4 +101,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { report, args };
+module.exports = { report, args, main };
