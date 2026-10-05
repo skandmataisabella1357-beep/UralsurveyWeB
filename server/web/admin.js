@@ -33,7 +33,7 @@
   let live = null; // состояние служб
   let view = 'overview';
   let rows = []; // строки текущего раздела
-  let lists = { stations: [], mountpoints: [], clients: [], tariffs: [], subnets: [] }; // справочники для форм и каталога сети
+  let lists = { stations: [], mountpoints: [], clients: [], tariffs: [], subnets: [], layers: [] }; // справочники для форм и каталога сети
   let picked = null;
   let search = '';
   let liveTimer = null;
@@ -137,12 +137,12 @@
       ],
     },
     logins: {
-      title: 'Логины NTRIP', path: '/api/admin/logins', needs: ['clients'], search: true,
+      title: 'Логины NTRIP', path: '/api/admin/logins', needs: ['clients', 'layers'], search: true,
       hint: 'Один логин — один ровер. Пароль создаёт сервер; он показывается при создании и по кнопке «Показать пароль».',
       cols: [
         ['Логин', (r) => `<span class="fig">${esc(r.login)}</span>`], ['Клиент', (r) => esc(r.staff ? 'служебный' : (r.client_name || '—'))], ['Ровер', (r) => esc(r.device || '—')],
         ['Сеансов', (r) => `<span class="fig">${r.max_sessions}</span>`], ['При втором подключении', (r) => (r.on_limit === 'evict' ? 'вытеснить старое' : 'не пускать новое')],
-        ['Состояние', (r) => (r.active ? '<span class="is-online">активен</span>' : '<span class="is-fail">отключён</span>')], ['Был на связи', (r) => when(r.last_seen_at)], ['Последний отказ', (r) => esc(r.last_refusal || '—')],
+        ['Состояние', (r) => (r.active ? '<span class="is-online">активен</span>' : '<span class="is-fail">отключён</span>')], ['Область работы', (r) => esc(r.area_layer_name || 'без ограничения')], ['Был на связи', (r) => when(r.last_seen_at)], ['Последний отказ', (r) => esc(r.last_refusal || '—')],
       ],
       fields: [
         { name: 'login', label: 'Логин', type: 'text', required: true, once: true },
@@ -151,6 +151,7 @@
         { name: 'device', label: 'Какой ровер', type: 'text' }, { name: 'max_sessions', label: 'Одновременных сеансов', type: 'number', value: 1 },
         { name: 'on_limit', label: 'При втором подключении', type: 'select', options: [['evict', 'вытеснить старое'], ['refuse', 'не пускать новое']], value: 'evict' },
         { name: 'active', label: 'Логин активен', type: 'check', value: true },
+        { name: 'area_layer_id', label: 'Область работы (слой с контурами)', type: 'select', options: () => lists.layers.filter((l) => l.polygons).map((l) => [l.id, l.name]), numeric: true, empty: '— без ограничения —', hint: 'вне контуров слоя ровер поправки не получает' },
         { name: 'password', label: 'Свой пароль', type: 'text', virtual: true, hint: 'пусто — сервер создаст сам (только при создании и смене)' },
       ],
       actions: [
@@ -318,6 +319,14 @@
         if (open) for (const id of g.station_ids) { const s = all.find((x) => x.id === id); if (s) html += railStation(s, true); }
       }
     }
+    // Слои из файлов KML и DXF: щелчок открывает действия со слоем
+    html += head('layers', 'Слои', String(lists.layers.length), '<button class="adm-plus" type="button" data-add="layer" title="Загрузить слой из файла KML или DXF">+</button>');
+    if (!isFolded('layers')) {
+      if (!lists.layers.length) html += '<div class="rail-empty">Слоёв пока нет. «+» — загрузить KML или DXF.</div>';
+      for (const l of lists.layers) {
+        html += `<button class="station is-layer ${layersShown.has(l.id) ? 'is-shown' : ''}" type="button" data-layer="${l.id}" aria-current="${tipFor === `layer:${l.id}`}"><i class="adm-layer-mark"></i><span class="station-name">${esc(l.name)}</span><span class="station-figures">${l.logins.length ? `${l.logins.length} лог.` : (l.polygons ? `${l.polygons} конт.` : `${l.lines} лин.`)}</span></button>`;
+      }
+    }
     const box = $('rail');
     if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
     $('rail-count').textContent = all.length ? `${on}/${all.length}` : '';
@@ -326,14 +335,17 @@
     const add = event.target.closest('[data-add]');
     if (add) {
       if (add.dataset.add === 'stop' || add.dataset.add === 'resume') { await toggleNetwork(add.dataset.add === 'stop'); return; }
+      if (add.dataset.add === 'layer') { $('layer-file').value = ''; $('layer-file').click(); return; }
       if (add.dataset.add === 'station') { await open('stations'); openForm(null); }
       else { await open('subnets'); sub.fresh = true; sub.draftFor = undefined; openStep('contour'); }
       return;
     }
     const twist = event.target.closest('[data-fold]');
     if (twist) { fold(twist.dataset.fold); return; }
+    const layer = event.target.closest('[data-layer]');
+    if (layer) { showTip(layer, `layer:${layer.dataset.layer}`); renderRail(); return; }
     const net = event.target.closest('[data-net]');
-    if (net) { await open('subnets'); sub.fresh = false; sub.id = Number(net.dataset.net); render(); showSteps(); return; }
+    if (net) { await open('subnets'); sub.fresh = false; sub.id = Number(net.dataset.net); render(); showSteps(document.querySelector(`#rail [data-net="${sub.id}"]`)); return; }
     const st = event.target.closest('[data-st]');
     if (!st) return;
     // Щелчок по станции — её свойства справа, как в приложении
@@ -359,7 +371,7 @@
     const tile = event.target.closest('[data-view]');
     if (!tile) return;
     // У подсетей вместе с разделом открывается окно с плитками шагов
-    if (tile.dataset.view === 'subnets') open('subnets').then(showSteps);
+    if (tile.dataset.view === 'subnets') open('subnets').then(() => showSteps());
     else open(tile.dataset.view);
   });
 
@@ -526,6 +538,22 @@
   let tipTimer = null;
   function tipHtml(key) {
     const [kind, id] = key.split(':');
+    if (kind === 'layer') {
+      const l = lists.layers.find((x) => x.id === Number(id));
+      if (!l) return '<b>Слой</b><p>Такого слоя уже нет.</p>';
+      const chip = (act, text, on) => `<button class="adm-chip" type="button" data-layer-act="${act}" data-id="${l.id}" ${on === undefined ? '' : `aria-current="${on}"`}>${text}</button>`;
+      return `<b>${esc(l.name)}</b><p>${l.format.toUpperCase()}${l.crs !== 'wgs84' ? `, ${esc(CRS_NAME[l.crs] || l.crs)}` : ''}: контуров ${l.polygons}, линий ${l.lines}.${l.logins.length ? ` Область работы для логинов: ${esc(l.logins.map((u) => u.login).join(', '))}.` : ''}</p>
+        <div class="adm-tip-row">${chip('show', 'Показывать на карте', layersShown.has(l.id))}${chip('zoom', 'Приблизить к слою')}${isAdmin() ? `${chip('logins', l.polygons ? 'Область работы для логинов…' : 'Область работы: в слое нет контуров')}${chip('delete', 'Удалить слой')}` : ''}</div>`;
+    }
+    if (key === 'view:subnets') {
+      // Подсети: выбор подсети и шага прямо здесь
+      const nets = view === 'subnets' ? rows : lists.subnets;
+      const row = sub.fresh ? null : nets.find((r) => r.id === sub.id) || null;
+      const chips = nets.map((r) => `<button class="adm-chip" type="button" data-sub="${r.id}" aria-current="${Boolean(row) && r.id === row.id}">${esc(r.name)}${r.calc_state === 'running' ? ' ·&nbsp;считается' : ''}</button>`).join('')
+        + (isAdmin() ? `<button class="adm-chip" type="button" data-sub="new" aria-current="${!row}">+ новая</button>` : '');
+      const steps = Object.entries(STEPS).map(([step, title]) => `<button class="adm-chip adm-step" type="button" data-step="${step}" ${!row && step !== 'contour' ? 'disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${STEP_ICON[step]}</svg>${title}</button>`).join('');
+      return `<b>Подсети</b><p>${row ? `Выбрана ${esc(row.name)}: станций ${row.station_ids.length}.` : 'Новая подсеть начинается с контура.'}</p><div class="adm-chips">${chips}</div><div class="adm-tip-row">${steps}</div>`;
+    }
     if (kind === 'view') {
       const c = live ? live.counts : null;
       const more = { stations: () => `На связи ${live.stations.filter((s) => s.link.state === 'online').length} из ${c.stations}.`, subnets: () => `Подсетей: ${lists.subnets.length}. Щелчок открывает шаги: контур, расчёт, подключение.`,
@@ -552,10 +580,11 @@
       <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, reachColors().fix[0])}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, reachColors().float[0])}${chip('over', 'Перекрытие фикса · две базы и больше', reachColors().over[0])}</div>
       <p>${one ? `Ионосфера сейчас: ${num(one.iono_ppm, 1)} мм на км. Вне зон сеть ровера не покрывает.` : 'Расчёта сети ещё не было: запустите расчёт подсети — зоны появятся вокруг её станций.'}</p>`;
   }
-  function showTip(el) {
+  // key — что показать; по умолчанию берётся у самого элемента
+  function showTip(el, key) {
     if (!el) return;
     clearTimeout(tipTimer);
-    tipFor = el.dataset.tip;
+    tipFor = key || el.dataset.tip;
     const tip = $('tip');
     tip.innerHTML = tipHtml(tipFor);
     tip.hidden = false;
@@ -565,13 +594,47 @@
   }
   function hideTip() {
     clearTimeout(tipTimer);
-    tipTimer = setTimeout(() => { $('tip').hidden = true; tipFor = null; }, 220);
+    tipTimer = setTimeout(closeTip, 220);
   }
+  function closeTip() {
+    clearTimeout(tipTimer);
+    $('tip').hidden = true;
+    tipFor = null;
+  }
+  // Щелчок мимо (по карте, по панелям) и Esc убирают всплывающее окно; Esc без него закрывает окно шага
+  document.addEventListener('mousedown', (event) => {
+    if (!$('tip').hidden && !event.target.closest('#tip, #nav, #rail')) closeTip();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || sub.drawing) return;
+    if (!$('tip').hidden) { closeTip(); return; }
+    if ($('sub-dialog').open && !document.querySelector('dialog[open]:modal')) $('sub-dialog').close();
+  });
   $('nav').addEventListener('mouseover', (event) => { const el = event.target.closest('[data-tip]'); if (el && el.dataset.tip !== tipFor) showTip(el); else if (el) clearTimeout(tipTimer); });
   $('nav').addEventListener('mouseleave', hideTip);
   $('tip').addEventListener('mouseenter', () => clearTimeout(tipTimer));
   $('tip').addEventListener('mouseleave', hideTip);
-  $('tip').addEventListener('click', (event) => {
+  $('tip').addEventListener('click', async (event) => {
+    const pick = event.target.closest('[data-sub]');
+    if (pick) {
+      sub.fresh = pick.dataset.sub === 'new';
+      if (!sub.fresh) sub.id = Number(pick.dataset.sub);
+      if (view !== 'subnets') await open('subnets'); else render();
+      tipFor = 'view:subnets';
+      $('tip').innerHTML = tipHtml(tipFor);
+      $('tip').hidden = false;
+      return;
+    }
+    const act = event.target.closest('[data-layer-act]');
+    if (act) { await layerAction(act.dataset.layerAct, Number(act.dataset.id)); return; }
+    const step = event.target.closest('[data-step]');
+    if (step) {
+      if (step.disabled) return;
+      closeTip();
+      if (view !== 'subnets') await open('subnets');
+      openStep(step.dataset.step);
+      return;
+    }
     const base = event.target.closest('[data-base]');
     const zone = event.target.closest('[data-zone]');
     if (!zone && !base) return;
@@ -637,19 +700,165 @@
     pane.style.zIndex = 345;
     pane.style.pointerEvents = 'none';
     const layers = [];
-    // Подписи — у верхнего края видимой карты, у каждой системы своя строка, чтобы не слипались
-    const rows = { msk: 0.13, sk42: 0.2, gsk: 0.27 };
+    // Подписи идут вдоль своих линий, снизу вверх. У каждой системы своя высота на карте, а ГСК-2011
+    // (её линии совпадают с СК-42) подписана с другой стороны линии — так подписи не слипаются
+    const rows = { msk: 0.12, sk42: 0.4, gsk: 0.4 };
     for (const l of lines) {
       const color = CS_COLOR[l.sys];
       // ГСК-2011 совпадает по линиям с СК-42: рисуется шире и бледнее, чтобы обе были видны
       const wide = l.sys === 'gsk';
       layers.push(L.polyline([[40, l.lon], [75, l.lon]], { pane: 'cszones', color, weight: wide ? 3 : (l.axis ? 1 : 1.5), opacity: wide ? 0.28 : (l.axis ? 0.6 : 0.9), dashArray: l.axis ? '6 7' : null, interactive: false, className: `adm-cs adm-cs-${l.sys}` }));
       if (l.lon <= b.getWest() || l.lon >= b.getEast()) continue;
-      const lat = b.getNorth() - (b.getNorth() - b.getSouth()) * (rows[l.sys] + (l.axis ? 0 : 0.035));
-      layers.push(L.marker([lat, l.lon], { pane: 'cszones', interactive: false, icon: L.divIcon({ className: `adm-cs-label adm-cs-${l.sys}`, html: `<span style="color:${color}">${esc(l.text)}</span>`, iconSize: [10, 14], iconAnchor: [-6, 7] }) }));
+      const lat = b.getNorth() - (b.getNorth() - b.getSouth()) * rows[l.sys];
+      layers.push(L.marker([lat, l.lon], { pane: 'cszones', interactive: false, icon: L.divIcon({ className: `adm-cs-label adm-cs-${l.sys}`, html: `<span style="color:${color}">${esc(l.text)}</span>`, iconSize: [0, 0], iconAnchor: [0, 0] }) }));
     }
     csZones.layer = L.layerGroup(layers).addTo(map);
   }
+
+  // ---------- Слои из KML и DXF ----------
+
+  const CRS_NAME = { 'wgs84': 'широта и долгота WGS-84', 'msk66-1': 'МСК-66, зона 1', 'msk66-2': 'МСК-66, зона 2', 'msk66-3': 'МСК-66, зона 3' };
+  let layersShown = new Set();
+  try { layersShown = new Set(JSON.parse(localStorage.getItem('admin-layers') || '[]')); } catch (err) { /* ничего не показано */ }
+  const layerGeo = new Map(); // номер слоя -> объекты (подгружаются при первом показе)
+  const layerDraw = { layer: null, key: '' };
+  const keepShown = () => { try { localStorage.setItem('admin-layers', JSON.stringify([...layersShown])); } catch (err) { /* не запомнится */ } };
+
+  async function layerFeatures(id) {
+    if (!layerGeo.has(id)) {
+      const res = await api(`/api/admin/layers/${id}`);
+      if (!res.ok) return null;
+      layerGeo.set(id, res.data.features);
+    }
+    return layerGeo.get(id);
+  }
+
+  function drawLayers() {
+    if (!map) return;
+    const ids = lists.layers.map((l) => l.id).filter((id) => layersShown.has(id));
+    // Геометрия подгружается по мере надобности; как придёт — слой дорисуется
+    for (const id of ids) if (!layerGeo.has(id)) layerFeatures(id).then((f) => { if (f) drawLayers(); });
+    const ready = ids.filter((id) => layerGeo.has(id));
+    const key = ready.join();
+    if (key === layerDraw.key) return;
+    layerDraw.key = key;
+    if (layerDraw.layer) { layerDraw.layer.remove(); layerDraw.layer = null; }
+    if (!ready.length) return;
+    const pane = map.getPane('layers') || map.createPane('layers');
+    pane.style.zIndex = 348;
+    const shapes = [];
+    for (const id of ready) {
+      const name = (lists.layers.find((l) => l.id === id) || {}).name || '';
+      for (const f of layerGeo.get(id)) {
+        const style = { pane: 'layers', color: '#ff8fd0', weight: 1.6, opacity: 0.95, fillColor: '#ff8fd0', fillOpacity: 0.07, className: 'adm-layer-shape' };
+        shapes.push((f.kind === 'polygon' ? L.polygon(f.points, style) : L.polyline(f.points, { ...style, fill: false })).bindTooltip(esc(f.name ? `${name}: ${f.name}` : name), { sticky: true }));
+      }
+    }
+    layerDraw.layer = L.layerGroup(shapes).addTo(map);
+  }
+
+  async function layerAction(act, id) {
+    const l = lists.layers.find((x) => x.id === id);
+    if (!l) return;
+    if (act === 'show') {
+      if (layersShown.has(id)) layersShown.delete(id); else layersShown.add(id);
+      keepShown();
+      drawLayers();
+      renderRail();
+      $('tip').innerHTML = tipHtml(`layer:${id}`);
+    } else if (act === 'zoom') {
+      const f = await layerFeatures(id);
+      if (!f) return;
+      layersShown.add(id);
+      keepShown();
+      drawLayers();
+      renderRail();
+      window.StationMap.fit(f.flatMap((x) => x.points));
+      closeTip();
+    } else if (act === 'logins' && l.polygons) {
+      closeTip();
+      const res = await api('/api/admin/logins');
+      if (!res.ok) return;
+      const chosen = new Set(l.logins.map((u) => u.id));
+      $('area-title').textContent = `Область работы · ${l.name}`;
+      $('area-list').innerHTML = res.data.map((u) => `<label class="adm-check"><input type="checkbox" value="${u.id}" ${chosen.has(u.id) ? 'checked' : ''}><span class="fig">${esc(u.login)}</span></label>`).join('') || '<p class="hint">Логинов пока нет: заведите их в разделе «Логины NTRIP».</p>';
+      $('area-error').hidden = true;
+      $('area-dialog').dataset.id = id;
+      $('area-dialog').showModal();
+    } else if (act === 'delete') {
+      if (!window.confirm(`Удалить слой ${l.name}?${l.logins.length ? ' Логины, для которых он был областью работы, останутся без ограничения.' : ''}`)) return;
+      const res = await api(`/api/admin/layers/${id}`, 'DELETE');
+      toast(res.ok ? 'Слой удалён.' : res.error, 4000);
+      if (res.ok) { layersShown.delete(id); layerGeo.delete(id); keepShown(); lists.layers = lists.layers.filter((x) => x.id !== id); }
+      closeTip();
+      render();
+    }
+  }
+  $('area-cancel').addEventListener('click', () => $('area-dialog').close());
+  $('area-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const ids = [...$('area-list').querySelectorAll('input:checked')].map((x) => Number(x.value));
+    const res = await api(`/api/admin/layers/${$('area-dialog').dataset.id}/logins`, 'POST', { login_ids: ids });
+    if (!res.ok) { $('area-error').textContent = res.error || 'Сохранить не удалось.'; $('area-error').hidden = false; return; }
+    $('area-dialog').close();
+    toast(ids.length ? `Область работы задана для логинов: ${ids.length}. Раздача применит её в течение нескольких секунд.` : 'Область работы по этому слою снята со всех логинов.', 6000);
+    const list = await api('/api/admin/layers');
+    if (list.ok) lists.layers = list.data;
+    render();
+  });
+
+  // Загрузка файла: разбор идёт в браузере, на сервер уходят уже готовые контуры в широте и долготе
+  const upload = { text: '', format: '', parsed: null };
+  function parseUpload() {
+    const LP = window.LayerParse;
+    if (upload.format === 'kml') return LP.parseKml(upload.text);
+    const crs = $('layer-crs').value;
+    const swap = $('layer-axes').value === 'ne';
+    const zone = Number(crs.split('-')[1]);
+    return LP.parseDxf(upload.text, (x, y) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      if (crs === 'wgs84') return swap ? [x, y] : [y, x];
+      const g = window.CoordSys.inverse('msk66', swap ? x : y, swap ? y : x, zone);
+      return g ? [g.lat, g.lon] : null;
+    });
+  }
+  function syncUpload() {
+    upload.parsed = parseUpload();
+    const p = upload.parsed;
+    $('layer-summary').textContent = p.features.length ? `В файле найдено: контуров ${p.polygons}, линий ${p.lines}, точек ${p.points}.${p.points >= window.LayerParse.MAX_POINTS * 0.95 ? ' Слишком подробные контуры прорежены.' : ''}`
+      : (upload.format === 'dxf' ? 'С такой системой координат объекты не попадают на карту: выберите другую систему или порядок осей.' : 'В файле не найдено ни контуров, ни линий.');
+  }
+  $('layer-file').addEventListener('change', async () => {
+    const file = $('layer-file').files[0];
+    if (!file) return;
+    upload.format = /\.dxf$/i.test(file.name) ? 'dxf' : 'kml';
+    upload.text = await file.text();
+    $('layer-name').value = file.name.replace(/\.[^.]+$/, '').slice(0, 80);
+    $('layer-crs').innerHTML = Object.entries(CRS_NAME).filter(([k]) => k !== 'msk66-3').map(([k, t]) => `<option value="${k}" ${k === 'msk66-1' ? 'selected' : ''}>${t}</option>`).join('');
+    $('layer-crs-box').hidden = upload.format !== 'dxf';
+    $('layer-axes-box').hidden = upload.format !== 'dxf';
+    $('layer-error').hidden = true;
+    syncUpload();
+    $('layer-dialog').showModal();
+  });
+  $('layer-crs').addEventListener('change', syncUpload);
+  $('layer-axes').addEventListener('change', syncUpload);
+  $('layer-cancel').addEventListener('click', () => $('layer-dialog').close());
+  $('layer-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fail = (text) => { $('layer-error').textContent = text; $('layer-error').hidden = false; };
+    if (!upload.parsed || !upload.parsed.features.length) return fail('Загружать нечего: в файле нет объектов, попадающих на карту.');
+    const res = await api('/api/admin/layers', 'POST', { name: $('layer-name').value.trim(), format: upload.format, crs: upload.format === 'dxf' ? $('layer-crs').value : 'wgs84', features: upload.parsed.features });
+    if (!res.ok) return fail(res.error || 'Загрузить не удалось.');
+    $('layer-dialog').close();
+    layerGeo.set(res.data.id, upload.parsed.features);
+    layersShown.add(res.data.id);
+    keepShown();
+    lists.layers = [...lists.layers, res.data].sort((a, b) => a.name.localeCompare(b.name));
+    toast(`Слой «${res.data.name}» загружен и показан на карте.`, 5000);
+    render();
+    window.StationMap.fit(upload.parsed.features.flatMap((x) => x.points));
+  });
 
   // Границы областей: Свердловская — светящейся линией, соседи — тонким пунктиром с названиями
   const regions = { data: null, layer: null, asked: false };
@@ -824,6 +1033,7 @@
     window.StationMap.update((live ? live.stations : []).filter((st) => st.position).map((st) => ({ ...st, name: st.id })), selected || null);
     drawBase();
     drawRegions();
+    drawLayers();
     drawZones();
     drawContour();
     drawVectors();
@@ -1175,7 +1385,9 @@
     sub.seenState = row ? row.calc_state : null;
     sub.seenPpp = row ? row.ppp_state : null;
     $('sub-dialog').classList.toggle('adm-wide', sub.step !== 'contour');
-    $('sub-head').textContent = `${row ? row.name : 'Новая подсеть'} · ${STEPS[sub.step]}`;
+    $('sub-head').textContent = row ? row.name : 'Новая подсеть';
+    // Шаги — тут же, в шапке окна: переход без возврата к выбору
+    $('sub-jumps').innerHTML = Object.entries(STEPS).map(([step, title]) => `<button class="adm-chip" type="button" data-jump="${step}" aria-current="${step === sub.step}" ${!row && step !== 'contour' ? 'disabled' : ''}>${title}</button>`).join('');
     $('sub-body').innerHTML = body;
     subLive();
   }
@@ -1184,7 +1396,7 @@
     sub.step = step;
     try { localStorage.setItem('admin-sub-step', step); } catch (err) { /* не запомнится */ }
     sub.drawing = false;
-    if (!$('sub-dialog').open) $('sub-dialog').showModal();
+    if (!$('sub-dialog').open) $('sub-dialog').show();
     render();
   }
 
@@ -1231,14 +1443,14 @@
     }
   });
   $('sub-dialog').addEventListener('click', async (event) => {
-    if (event.target === $('sub-dialog')) { $('sub-dialog').close(); return; }
+    const jump = event.target.closest('[data-jump]');
+    if (jump) { if (!jump.disabled) openStep(jump.dataset.jump); return; }
     const btn = event.target.closest('[data-do]');
     if (!btn) return;
     const row = subRow();
     const d = sub.draft;
     const act = btn.dataset.do;
     if (act === 'close') { $('sub-dialog').close(); return; }
-    if (act === 'steps') { $('sub-dialog').close(); showSteps(); return; }
     if (act === 'draw') { sub.before = d.contour.map((pt) => [...pt]); sub.beforeIds = new Set(d.ids); sub.drawing = true; $('sub-dialog').close(); return; }
     if (act === 'clear') { d.contour = []; render(); return; }
     if (act === 'ppp-run') { openRun(`ppp-${row.id}`, `${row.name} · PPP-AR`); run.since = Date.parse(row.ppp_started_at) || 0; renderRun(); return; }
@@ -1295,33 +1507,12 @@
     openStep('contour');
   });
 
-  // Окно раздела: выбор подсети и шага плитками
-  function showSteps() {
+  // Выбор подсети и шага — во всплывающем окне у значка «Подсети» или у строки подсети в каталоге
+  function showSteps(anchor) {
     if (sub.id === null && rows.length && !sub.fresh) sub.id = rows[0].id;
     if (!rows.length) sub.fresh = true;
-    const row = subRow();
-    $('sub-chips').innerHTML = rows.map((r) => `<button class="adm-chip" type="button" data-sub="${r.id}" aria-current="${Boolean(row) && r.id === row.id}">${esc(r.name)}${r.calc_state === 'running' ? ' ·&nbsp;считается' : ''}</button>`).join('')
-      + (isAdmin() ? `<button class="adm-chip" type="button" data-sub="new" aria-current="${!row}">+ новая</button>` : '');
-    $('sub-steps').innerHTML = Object.entries(STEPS).map(([id, title]) => `<button class="tile" type="button" data-step="${id}" ${!row && id !== 'contour' ? 'disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${STEP_ICON[id]}</svg><span>${title}</span></button>`).join('');
-    if (!$('sub-fly').open) $('sub-fly').showModal();
+    showTip(anchor || document.querySelector('#nav [data-view="subnets"]'), 'view:subnets');
   }
-  $('sub-fly').addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-sub]');
-    if (chip) {
-      sub.fresh = chip.dataset.sub === 'new';
-      if (!sub.fresh) sub.id = Number(chip.dataset.sub);
-      showSteps();
-      render();
-      return;
-    }
-    const tile = event.target.closest('[data-step]');
-    // Щелчок мимо плиток закрывает окно
-    if (!tile) { if (event.target === $('sub-fly')) $('sub-fly').close(); return; }
-    if (tile.disabled) return;
-    $('sub-fly').close();
-    openStep(tile.dataset.step);
-  });
-  $('sub-fly').addEventListener('close', () => { if (sub.fresh && !$('sub-dialog').open) { sub.fresh = false; render(); } });
 
   // ---------- Остановка приёма: одна станция или вся сеть ----------
   // Остановленная станция не принимается, и её точки подключения роверам не раздаются.
@@ -1544,8 +1735,9 @@
     if (!res || !res.ok) return;
     live = res.data;
     // Каталог сети слева виден всегда: его списки обновляются вместе с состоянием
-    const [nets, sts] = await Promise.all([api('/api/admin/subnets'), view === 'stations' ? null : api('/api/admin/stations')]);
+    const [nets, sts, lays] = await Promise.all([api('/api/admin/subnets'), view === 'stations' ? null : api('/api/admin/stations'), api('/api/admin/layers')]);
     if (nets.ok) lists.subnets = nets.data;
+    if (lays.ok) lists.layers = lays.data;
     if (sts && sts.ok) lists.stations = sts.data;
     if ($('run-dialog').open) renderRun();
     if (dialog.open) { renderNav(); return; }

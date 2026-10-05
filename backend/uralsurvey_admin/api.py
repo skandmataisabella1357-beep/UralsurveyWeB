@@ -28,12 +28,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 STATIC = [
     ("/ui/", ROOT / "app" / "renderer"),
     ("/modules/coordsys/", ROOT / "modules" / "coordsys"),
+    ("/modules/layers/", ROOT / "modules" / "layers"),
     ("/", ROOT / "server" / "web"),
 ]
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json; charset=utf-8"}
 COOKIE = "ural_session"
 MAX_BODY = 256 * 1024
+LAYER_BODY = 900 * 1024
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 
@@ -91,6 +93,12 @@ class App:
             r("PATCH", r"/api/admin/mountpoints/(\d+)", lambda q: (200, store.save_mountpoint(q.who, q.body, q.id)), "admin"),
             r("DELETE", r"/api/admin/mountpoints/(\d+)", lambda q: (200, store.delete_mountpoint(q.who, q.id) or {}), "admin"),
             # Клиенты
+            r("GET", r"/api/admin/layers", lambda q: (200, store.list_layers()), "operator"),
+            r("POST", r"/api/admin/layers", lambda q: (201, store.save_layer(q.who, q.body)), "admin"),
+            r("GET", r"/api/admin/layers/(\d+)", lambda q: (200, store.get_layer(q.id)), "operator"),
+            r("DELETE", r"/api/admin/layers/(\d+)", lambda q: (200, store.delete_layer(q.who, q.id) or {}), "admin"),
+            r("POST", r"/api/admin/layers/(\d+)/logins", lambda q: (200, store.set_layer_logins(q.who, q.id, q.body.get("login_ids"))), "admin"),
+
             r("GET", r"/api/admin/subnets", lambda q: (200, store.list_subnets()), "operator"),
             r("POST", r"/api/admin/subnets", lambda q: (201, store.save_subnet(q.who, q.body)), "admin"),
             r("PATCH", r"/api/admin/subnets/(\d+)", lambda q: (200, store.save_subnet(q.who, q.body, q.id)), "admin"),
@@ -276,7 +284,8 @@ def make_handler(app: App):
 
         def body(self):
             length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY:
+            # Слой с контурами заметно больше обычного запроса; предел всё равно ниже, чем у nginx (1 МБ)
+            if length > (LAYER_BODY if self.path.startswith("/api/admin/layers") else MAX_BODY):
                 raise Problem("Слишком длинный запрос.", 413)
             if not length:
                 return {}

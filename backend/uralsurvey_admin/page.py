@@ -12,7 +12,7 @@ import pathlib
 from html import escape
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-FILES = {"/ui/": ROOT / "app" / "renderer", "/modules/coordsys/": ROOT / "modules" / "coordsys", "/": ROOT / "server" / "web"}
+FILES = {"/ui/": ROOT / "app" / "renderer", "/modules/coordsys/": ROOT / "modules" / "coordsys", "/modules/layers/": ROOT / "modules" / "layers", "/": ROOT / "server" / "web"}
 POLICY = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
 
 
@@ -113,10 +113,9 @@ def dialogs() -> str:
         el("div", button("Удалить", extra="btn-danger", id="form-delete", hidden=True), el("span", cls="adm-grow"), button("Отмена", id="form-cancel"),
            button("Сохранить", "primary", type="submit", id="form-save"), cls="dialog-actions"),
         id="form", method="dialog", novalidate=True), cls="dialog adm-dialog", id="form-dialog")
-    steps = el("dialog", el("h2", "Подсети"), el("div", cls="adm-chips", id="sub-chips"), el("div", cls="adm-steps-grid", id="sub-steps"), cls="dialog adm-steps", id="sub-fly")
     subnet = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_do="close", title="Закрыть"),
-                el("h2", el("span", id="sub-head"), " ", el("button", "другой шаг", cls="adm-chip", type="button", data_do="steps")), el("div", id="sub-body"),
-                cls="dialog adm-dialog", id="sub-dialog")
+                el("h2", el("span", id="sub-head"), el("span", cls="adm-chips", id="sub-jumps")), el("div", id="sub-body"),
+                cls="dialog adm-dialog adm-panel", id="sub-dialog")
     setting = el("dialog", el(
         "form", el("h2", id="set-title"), field("", label_id="set-hint", id="set-value", type="number"), error("set-error"),
         el("div", button("Отмена", id="set-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),
@@ -125,12 +124,26 @@ def dialogs() -> str:
     run = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_run="close", title="Закрыть"), el("h2", id="run-head"),
              el("p", cls="hint", id="run-stage"), el("div", el("i", id="run-bar"), cls="adm-progress"), el("ol", cls="log adm-run-log", id="run-log"),
              el("div", button("Закрыть", "primary", data_run="close"), cls="dialog-actions"), cls="dialog adm-dialog", id="run-dialog")
-    return "".join([form, steps, subnet, setting, run])
+    # Загрузка слоя из файла KML или DXF и область работы логинов по слою
+    layer = el("dialog", el(
+        "form", el("h2", "Новый слой"), el("input", type="file", id="layer-file", accept=".kml,.dxf", hidden=True),
+        field("Имя слоя", id="layer-name", type="text", maxlength="80", autocomplete="off"),
+        el("label", el("span", "Система координат чертежа"), el("select", id="layer-crs"), cls="field", id="layer-crs-box"),
+        el("label", el("span", "Оси чертежа"), el("select", el("option", "X — восток, Y — север (как в AutoCAD)", value="en"), el("option", "X — север, Y — восток (как в каталоге)", value="ne"), id="layer-axes"), cls="field", id="layer-axes-box"),
+        el("p", cls="hint", id="layer-summary"), error("layer-error"),
+        el("div", button("Отмена", id="layer-cancel"), button("Загрузить", "primary", type="submit"), cls="dialog-actions"),
+        id="layer-form", novalidate=True), cls="dialog adm-dialog", id="layer-dialog")
+    area = el("dialog", el(
+        "form", el("h2", id="area-title"), el("p", "Отмеченные логины получают поправки только внутри контуров этого слоя. Ровер должен сообщать своё положение: без него сеанс закрывается через полминуты.", cls="hint"),
+        el("div", cls="adm-sub-stations", id="area-list"), error("area-error"),
+        el("div", button("Отмена", id="area-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),
+        id="area-form", novalidate=True), cls="dialog adm-dialog", id="area-dialog")
+    return "".join([form, subnet, setting, run, layer, area])
 
 
 def admin_page() -> bytes:
     styles = ["/ui/vendor/leaflet/leaflet.css", "/ui/styles.css", "/server.css", "/admin.css"]
-    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/ui/map.js", "/admin.js"]
+    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/modules/layers/parse.js", "/ui/map.js", "/admin.js"]
     head = el(
         "head", el("meta", charset="utf-8"), el("meta", name="viewport", content="width=device-width, initial-scale=1"),
         el("meta", http_equiv="Content-Security-Policy", content=POLICY), el("title", "Uralsurvey — панель администратора"),

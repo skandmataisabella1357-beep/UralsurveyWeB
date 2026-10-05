@@ -198,6 +198,7 @@ FIELDS: dict[str, dict[str, Any]] = {
         "on_limit": _enum("evict", "refuse"),
         "staff": _bool,
         "active": _bool,
+        "area_layer_id": _int(1, 2**31 - 1, nullable=True),
     },
     "admins": {
         "login": _text(32, r"[A-Za-z0-9_.-]{2,32}", "латинские буквы, цифры и знаки _ . -, от 2 до 32"),
@@ -218,6 +219,7 @@ REQUIRED = {
 }
 
 TITLES = {
+    "layers": "слой",
     "subnets": "подсеть",
     "stations": "станция", "mountpoints": "точка подключения", "clients": "клиент", "tariffs": "тариф",
     "subscriptions": "подписка", "ntrip_logins": "логин", "admins": "администратор",
@@ -729,7 +731,7 @@ class Store:
         like = f"%{search.strip()}%"
         with self.db.connection() as conn:
             rows = conn.execute(
-                "SELECT l.*, c.name AS client_name FROM ntrip_logins l LEFT JOIN clients c ON c.id = l.client_id "
+                "SELECT l.*, c.name AS client_name, y.name AS area_layer_name FROM ntrip_logins l LEFT JOIN clients c ON c.id = l.client_id LEFT JOIN layers y ON y.id = l.area_layer_id "
                 "WHERE (%s::int IS NULL OR l.client_id = %s) AND (%s = '%%' OR l.login ILIKE %s OR l.device ILIKE %s) ORDER BY l.login",
                 (client_id, client_id, like, like, like)).fetchall()
         return [self._login_view(r) for r in rows]
@@ -903,6 +905,9 @@ class Store:
             subs = conn.execute("SELECT s.*, t.all_mountpoints, t.max_sessions AS tariff_sessions FROM subscriptions s JOIN tariffs t ON t.id = s.tariff_id").fetchall()
             tariff_points = conn.execute("SELECT tm.tariff_id, m.name FROM tariff_mountpoints tm JOIN mountpoints m ON m.id = tm.mountpoint_id").fetchall()
             lost = self._setting(conn, "station_lost_seconds")
+            # Области работы логинов: контуры слоёв, назначенных хотя бы одному логину
+            areas = {r["id"]: [f["points"] for f in r["features"] if f.get("kind") == "polygon"]
+                     for r in conn.execute("SELECT id, features FROM layers WHERE id IN (SELECT area_layer_id FROM ntrip_logins WHERE area_layer_id IS NOT NULL)")}
             accepted = {r["id"]: r["accepted"] for r in conn.execute("SELECT id, accepted FROM subnets")}
         today = dt.date.today()
         by_tariff: dict[int, list[str]] = {}
@@ -925,7 +930,9 @@ class Store:
 
         users = {}
         for row in logins:
-            entry = {"password": self.vault.decrypt(row["password_enc"]), "maxSessions": row["max_sessions"], "onLimit": row["on_limit"], "active": row["active"]}
+            entry = {"password": self.vault.decrypt(row["password_enc"]), "maxSessions": row["max_sessions"], "onLimit": row["on_limit"], "active": row["active"],
+                     # Область работы: вне этих контуров ровер поправки не получает; None — без ограничения
+                     "area": areas.get(row["area_layer_id"]) or None}
             if row["staff"]:
                 entry["mountpoints"] = all_points
             else:
@@ -1083,6 +1090,96 @@ class Store:
             if rows:
                 self._audit(conn, who, "убрана тестовая сеть", "stations", "", {"removed": len(rows)})
         return len(rows)
+
+    # ---------- Слои: контуры из KML и DXF ----------
+
+    @staticmethod
+    def _layer_features(value) -> list:
+        ok = isinstance(value, list) and 1 <= len(value) <= 2000
+        total = 0
+        out = []
+        for f in value if ok else []:
+            pts = f.get("points") if isinstance(f, dict) else None
+            kind = f.get("kind") if isinstance(f, dict) else None
+            good = kind in ("polygon", "line") and isinstance(pts, list) and len(pts) >= (3 if kind == "polygon" else 2) and all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)
+                and -90 <= p[0] <= 90 and -180 <= p[1] <= 180 for p in pts)
+            if not good:
+                ok = False
+                break
+            total += len(pts)
+            out.append({"kind": kind, "name": str(f.get("name") or "")[:80], "points": [[round(float(p[0]), 6), round(float(p[1]), 6)] for p in pts]})
+        if not ok or total > 20000:
+            raise Problem("Слой не принят: нужны контуры и линии в широте и долготе, не больше 2 000 объектов и 20 000 точек.")
+        return out
+
+    @staticmethod
+    def _layer_view(row: dict) -> dict:
+        out = _jsonable(row)
+        feats = out.pop("features", None)
+        if feats is not None:
+            out["polygons"] = sum(1 for f in feats if f.get("kind") == "polygon")
+            out["lines"] = sum(1 for f in feats if f.get("kind") == "line")
+        return out
+
+    def list_layers(self) -> list[dict]:
+        """Слои без геометрии: для списков. Геометрию отдаёт get_layer."""
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT * FROM layers ORDER BY name").fetchall()
+            users = conn.execute("SELECT area_layer_id, id, login FROM ntrip_logins WHERE area_layer_id IS NOT NULL ORDER BY login").fetchall()
+        out = []
+        for r in rows:
+            view = self._layer_view(r)
+            view["logins"] = [{"id": u["id"], "login": u["login"]} for u in users if u["area_layer_id"] == r["id"]]
+            out.append(view)
+        return out
+
+    def get_layer(self, layer_id: int) -> dict:
+        with self.db.connection() as conn:
+            row = conn.execute("SELECT * FROM layers WHERE id = %s", (layer_id,)).fetchone()
+        if row is None:
+            raise Problem(f"Нет такого слоя: №{layer_id}.", 404)
+        out = self._layer_view(row)
+        out["features"] = row["features"]
+        return out
+
+    def save_layer(self, who: dict, data: dict) -> dict:
+        if not isinstance(data, dict):
+            raise Problem("Запрос должен быть набором полей.")
+        name = str(data.get("name") or "").strip()
+        if not 1 <= len(name) <= 80:
+            raise Problem("У слоя должно быть имя, до 80 знаков.")
+        fmt = str(data.get("format") or "")
+        if fmt not in ("kml", "dxf"):
+            raise Problem("Слой загружается из файла KML или DXF.")
+        fields = {"name": name, "format": fmt, "crs": str(data.get("crs") or "wgs84")[:20], "note": str(data.get("note") or "")[:500],
+                  "features": Jsonb(self._layer_features(data.get("features"))), "created_by": who.get("login", "")}
+        with self.db.transaction() as conn:
+            row = self._insert(conn, "layers", fields)
+            view = self._layer_view(row)
+            self._audit(conn, who, "загружен", "layers", row["id"], {"name": name, "format": fmt, "crs": fields["crs"], "polygons": view["polygons"], "lines": view["lines"]})
+        view["logins"] = []
+        return view
+
+    def delete_layer(self, who: dict, layer_id: int) -> None:
+        with self.db.transaction() as conn:
+            row = self._delete(conn, "layers", layer_id)
+            self._audit(conn, who, "удалён", "layers", layer_id, {"name": row["name"]})
+
+    def set_layer_logins(self, who: dict, layer_id: int, login_ids) -> dict:
+        """Каким логинам слой задаёт область работы. Остальные логины с этим слоем освобождаются."""
+        if not isinstance(login_ids, list) or any(not isinstance(i, int) or isinstance(i, bool) for i in login_ids):
+            raise Problem("Логины — список их номеров.")
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT * FROM layers WHERE id = %s FOR UPDATE", (layer_id,)).fetchone()
+            if row is None:
+                raise Problem(f"Нет такого слоя: №{layer_id}.", 404)
+            if login_ids and not any(f.get("kind") == "polygon" for f in row["features"]):
+                raise Problem("В этом слое нет замкнутых контуров: область работы по линиям задать нельзя.")
+            conn.execute("UPDATE ntrip_logins SET area_layer_id = NULL WHERE area_layer_id = %s AND NOT (id = ANY(%s))", (layer_id, login_ids))
+            done = conn.execute("UPDATE ntrip_logins SET area_layer_id = %s WHERE id = ANY(%s) RETURNING login", (layer_id, login_ids)).fetchall()
+            self._audit(conn, who, "задана область работы", "layers", layer_id, {"name": row["name"], "logins": sorted(r["login"] for r in done)})
+        return next(x for x in self.list_layers() if x["id"] == layer_id)
 
     # ---------- Подсети ----------
 

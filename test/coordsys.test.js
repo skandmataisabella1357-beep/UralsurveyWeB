@@ -42,6 +42,8 @@ function classicGk(lat, l, ell) {
   return { north, east };
 }
 
+const layers = require('../modules/layers/parse');
+
 test('проекция Гаусса — Крюгера совпадает с классическими формулами', () => {
   for (const latDeg of [50, 56.84, 59.6]) {
     for (const dLonDeg of [0, 0.5, -1.2, 2.9]) {
@@ -89,4 +91,58 @@ test('МСК-66, зона 1: совпадение с каталогом зака
   assert.equal(p.zone, 1);
   assert.ok(Math.abs(p.east - 1599130.417) < 0.002, `восток ${p.east}`);
   assert.ok(Math.abs(p.north - 420391.321) < 0.002, `север ${p.north}`);
+});
+
+test('обратный пересчёт: плоские МСК-66 возвращаются в ту же широту и долготу', () => {
+  // Туда и обратно по области: расхождение — миллиметры (1e-7° ≈ 1 см): высота при обратном ходе неизвестна
+  for (const [lat, lon, h] of [[56.8389, 60.6057, 270], [57.0923, 61.6840, 190], [59.6, 57.4, 150], [56.1, 62.9, 120], [58.0, 66.05, 60], [57.5, 64.0, 100]]) {
+    const flat = cs.convert('msk66', llhToEcef(lat * D2R, lon * D2R, h));
+    const back = cs.inverse('msk66', flat.north, flat.east, flat.zone);
+    // Высота при обратном ходе неизвестна и принята нулевой: в плане это меньше миллиметра
+    assert.ok(Math.abs(back.lat - lat) < 2e-7 && Math.abs(back.lon - lon) < 2e-7, `${lat} ${lon} -> ${back.lat} ${back.lon}`);
+  }
+  assert.equal(cs.inverse('msk66', 385000, 1530000, 9), null);
+  assert.equal(cs.inverse('нет такой', 1, 2, 1), null);
+});
+
+test('слои: контуры и линии из KML', () => {
+  const kml = `<?xml version="1.0"?><kml><Document>
+    <Placemark><name>Участок 1</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
+      60.5,56.8,0 60.7,56.8,0 60.7,56.9,0 60.5,56.9,0 60.5,56.8,0
+    </coordinates></LinearRing></outerBoundaryIs><innerBoundaryIs><LinearRing><coordinates>60.55,56.82 60.6,56.82 60.6,56.85 60.55,56.82</coordinates></LinearRing></innerBoundaryIs></Polygon></Placemark>
+    <Placemark><name><![CDATA[Трасса]]></name><LineString><coordinates>60.1,56.5 60.2,56.6 60.3,56.7</coordinates></LineString></Placemark>
+    <Placemark><name>Точка</name><Point><coordinates>60,56</coordinates></Point></Placemark>
+  </Document></kml>`;
+  const got = layers.parseKml(kml);
+  assert.deepEqual([got.polygons, got.lines, got.points], [1, 1, 7]);
+  // Контур: внешняя граница, без повтора первой точки; широта идёт первой
+  assert.deepEqual(got.features[0], { kind: 'polygon', name: 'Участок 1', points: [[56.8, 60.5], [56.8, 60.7], [56.9, 60.7], [56.9, 60.5]] });
+  assert.deepEqual([got.features[1].kind, got.features[1].name, got.features[1].points.length], ['line', 'Трасса', 3]);
+  assert.deepEqual(layers.parseKml('<kml></kml>').features, []);
+});
+
+test('слои: полилинии и отрезки из DXF, пересчёт из МСК-66', () => {
+  const entity = (...pairs) => pairs.map(([c, v]) => `${c}\n${v}`).join('\n');
+  // Квадрат 2×2 км в МСК-66 (зона 1) полилинией нового вида, отрезок и полилиния старого вида с вершинами
+  const dxf = [entity([0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC']),
+    entity([0, 'SECTION'], [2, 'ENTITIES']),
+    entity([0, 'LWPOLYLINE'], [8, 'Граница'], [90, 4], [70, 1], [10, 1530000], [20, 385000], [10, 1532000], [20, 385000], [10, 1532000], [20, 387000], [10, 1530000], [20, 387000]),
+    entity([0, 'LINE'], [8, 'Ось'], [10, 1530000], [20, 385000], [11, 1532000], [21, 387000]),
+    entity([0, 'POLYLINE'], [8, 'Старая'], [66, 1], [70, 0], [0, 'VERTEX'], [8, 'Старая'], [10, 1530500], [20, 385500], [0, 'VERTEX'], [8, 'Старая'], [10, 1531500], [20, 386500], [0, 'SEQEND']),
+    entity([0, 'CIRCLE'], [8, 'Лишнее'], [10, 1531000], [20, 386000], [40, 50]),
+    entity([0, 'ENDSEC'], [0, 'EOF'])].join('\n');
+  const toLatLon = (x, y) => { const g = cs.inverse('msk66', y, x, 1); return [g.lat, g.lon]; };
+  const got = layers.parseDxf(dxf, toLatLon);
+  assert.deepEqual([got.polygons, got.lines], [1, 2]);
+  assert.deepEqual(got.features.map((f) => [f.kind, f.name, f.points.length]), [['polygon', 'Граница', 4], ['line', 'Ось', 2], ['line', 'Старая', 2]]);
+  // Юго-западный угол квадрата возвращается в те же плоские координаты
+  const [lat, lon] = got.features[0].points[0];
+  const back = cs.convert('msk66', llhToEcef(lat * D2R, lon * D2R, 0));
+  assert.ok(Math.abs(back.east - 1530000) < 0.2 && Math.abs(back.north - 385000) < 0.2, `${back.east} ${back.north}`);
+  // Не та система координат: объекты не попадают на карту и отбрасываются
+  assert.deepEqual(layers.parseDxf(dxf, (x, y) => [y, x]).features, []);
+  // Точка внутри контура и снаружи
+  const ring = got.features[0].points;
+  assert.equal(layers.inside(lat + 0.005, lon + 0.01, [ring]), true);
+  assert.equal(layers.inside(lat - 0.005, lon + 0.01, [ring]), false);
 });

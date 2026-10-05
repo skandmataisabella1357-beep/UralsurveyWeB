@@ -469,3 +469,41 @@ test('точка подсети: координаты базы свои, наб�
     await b.stop();
   }
 });
+
+test('область работы логина: вне контура ровер не допускается, вышедший — отключается, молчащий — тоже', async () => {
+  // Контур вокруг Екатеринбурга: [широта, долгота]
+  const area = [[[56.6, 60.3], [56.6, 60.9], [57.0, 60.9], [57.0, 60.3]]];
+  const b = await bench({ rules: { areaGgaMs: 400 }, users: { fenced: { password: 'p1', maxSessions: 5, area }, free: { password: 'p2' } } });
+  const gga = (lat, lon) => {
+    const part = (v, d) => { const deg = Math.floor(v); return `${String(deg).padStart(d, '0')}${((v - deg) * 60).toFixed(5).padStart(8, '0')}`; };
+    const body = `GPGGA,120000.00,${part(lat, 2)},N,${part(lon, 3)},E,4,12,0.8,250.0,M,-10.0,M,1.0,0001`;
+    return `$${body}*${[...body].reduce((x, ch) => x ^ ch.charCodeAt(0), 0).toString(16).toUpperCase().padStart(2, '0')}`;
+  };
+  try {
+    // Снаружи — отказ 403 ещё при подключении
+    const outside = rover(b.port, { user: 'fenced', password: 'p1', version: 2, gga: gga(57.9, 60.6) });
+    await until(() => outside.closed);
+    assert.match(outside.status(), /403/);
+    assert.equal(b.service.refusals.pop().reason, 'ровер вне разрешённой области работы');
+    // Внутри — работает; выехал за контур — сеанс закрыт
+    const inside = rover(b.port, { user: 'fenced', password: 'p1', version: 2, gga: gga(56.84, 60.6) });
+    await until(() => b.service.sessions.size === 1);
+    inside.socket.write(`${gga(56.85, 60.61)}\r\n`);
+    await wait(150);
+    assert.equal(b.service.sessions.size, 1);
+    inside.socket.write(`${gga(57.5, 60.6)}\r\n`);
+    await until(() => inside.closed);
+    // Положение не сообщил — ограничение молчанием не обойти
+    const silent = rover(b.port, { user: 'fenced', password: 'p1' });
+    await until(() => b.service.sessions.size === 1);
+    await until(() => silent.closed, 3000);
+    // Логин без области работает где угодно и без положения
+    const free = rover(b.port, { user: 'free', password: 'p2', version: 2, gga: gga(57.9, 60.6) });
+    await until(() => b.service.sessions.size === 1);
+    await wait(900);
+    assert.equal(free.closed, false);
+    free.end();
+  } finally {
+    await b.stop();
+  }
+});

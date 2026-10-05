@@ -15,6 +15,7 @@ const { jsonServer } = require('../shared/http');
 const { loadConfig } = require('../shared/config');
 const rtcm = require('../rtcm/messages');
 const ntrip = require('./ntrip');
+const { inside } = require('../../modules/layers/parse');
 
 // Правила сеанса (ТЗ, раздел «Как пользователь работает с сервером»)
 const RULES = {
@@ -28,6 +29,7 @@ const RULES = {
   wrongPerMinute: 5, // неверных паролей с адреса за минуту до блокировки
   banMinutes: [1, 5, 15, 60],
   connectsPerMinute: 10, // подключений на логин
+  areaGgaMs: 30000, // логин с областью работы обязан сообщить положение за это время
 };
 
 // Что из потока станции идёт пользователю. Эфемериды и фирменные сообщения остаются внутри сервера.
@@ -249,6 +251,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const quiet = now - Math.max(point.feed.lastAt, 0);
       if (quiet > R.stationLostMs) for (const s of [...point.sessions]) close(s, 'станция не на связи');
     }
+    // Логин с областью работы обязан сообщать положение: иначе ограничение обходится молчанием
+    for (const s of [...sessions]) if (s.area && !s.gga && now - s.startedAt > R.areaGgaMs) close(s, 'ровер не сообщил своё положение, а для логина задана область работы');
     for (const [key, list] of connects) if (!list.some((t) => now - t < 60000)) connects.delete(key);
     for (const [ip, b] of bans) if (b.until < now && now - b.lastAt > 3600000) bans.delete(ip);
   }, 1000);
@@ -336,6 +340,11 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       if (!own || !allowed) return refuse(socket, req, 403, 'точка не входит в подписку', login);
     }
 
+    // Область работы: ровер, который уже сообщил положение вне её, не допускается
+    const area = Array.isArray(user.area) && user.area.length ? user.area : null;
+    const at = area && req.gga ? ntrip.parseGga(req.gga) : null;
+    if (at && !inside(at.lat, at.lon, area)) return refuse(socket, req, 403, 'ровер вне разрешённой области работы', login);
+
     const recent = (connects.get(login) || []).filter((t) => now - t < 60000);
     recent.push(now);
     connects.set(login, recent);
@@ -355,7 +364,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
 
     const session = {
       id: `${bootId}-${++seq}`, socket, login, point, ip, version: req.version, agent: req.agent,
-      startedAt: now, bytes: 0, gga: null, ggaAt: 0, firstGga: null, closed: false, endReason: null, text: '',
+      startedAt: now, bytes: 0, gga: null, ggaAt: 0, firstGga: null, closed: false, endReason: null, text: '', area,
     };
     socket.setNoDelay(true); // кадр уходит сразу, без склейки пакетов
     socket.setKeepAlive(true, 30000);
@@ -378,6 +387,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       session.gga = g;
       session.ggaAt = Date.now();
       if (!session.firstGga) session.firstGga = g;
+      // Ровер вышел из своей области работы — сеанс закрывается
+      if (session.area && !inside(g.lat, g.lon, session.area)) close(session, 'ровер вне разрешённой области работы');
     };
     if (req.gga) takeGga(req.gga);
     const onText = (data) => {
@@ -407,6 +418,11 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         const was = users[s.login];
         if (!now || now.active === false) close(s, 'логин отключён или удалён');
         else if (was && was.password !== now.password) close(s, 'сменён пароль логина');
+        else {
+          // Область работы могли задать, сменить или снять на ходу
+          s.area = Array.isArray(now.area) && now.area.length ? now.area : null;
+          if (s.area && s.gga && !inside(s.gga.lat, s.gga.lon, s.area)) close(s, 'ровер вне разрешённой области работы');
+        }
       }
       users = dir.users;
       if (dir.rules && Number.isFinite(dir.rules.stationLostMs)) R.stationLostMs = dir.rules.stationLostMs;

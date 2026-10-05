@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -379,6 +379,51 @@ class AdminTest(unittest.TestCase):
             if not was:
                 st = next(s for s in a.call("GET", "/api/admin/stations")[1] if s["code"] == code)
                 a.call("PATCH", f"/api/admin/stations/{st['id']}", {"enabled": False})
+
+    def test_09c_layers(self):
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        square = [[56.6, 60.3], [56.6, 60.9], [57.0, 60.9], [57.0, 60.3]]
+        for body, text in [({"name": "", "format": "kml", "features": []}, "имя"), ({"name": "A", "format": "shp", "features": []}, "KML или DXF"),
+                           ({"name": "A", "format": "kml", "features": [{"kind": "polygon", "points": [[1, 2]]}]}, "не принят"),
+                           ({"name": "A", "format": "kml", "features": [{"kind": "polygon", "points": [[100, 2], [1, 2], [3, 4]]}]}, "не принят")]:
+            status, res, _ = a.call("POST", "/api/admin/layers", body)
+            self.assertEqual(status, 400, res)
+            self.assertIn(text, res["error"])
+        status, layer, _ = a.call("POST", "/api/admin/layers", {"name": "Участок", "format": "dxf", "crs": "msk66-1",
+                                                                "features": [{"kind": "polygon", "name": "Граница", "points": square}, {"kind": "line", "points": square[:2]}]})
+        self.assertEqual(status, 201, layer)
+        self.assertEqual((layer["polygons"], layer["lines"], layer["logins"]), (1, 1, []))
+        self.assertNotIn("features", layer)
+        self.assertEqual(a.call("GET", f"/api/admin/layers/{layer['id']}")[1]["features"][0]["points"], square)
+        status, only_lines, _ = a.call("POST", "/api/admin/layers", {"name": "Трасса", "format": "kml", "features": [{"kind": "line", "points": square[:3]}]})
+        self.assertEqual(status, 201, only_lines)
+        # Область работы: логину назначается слой с контурами; раздача получает контуры
+        status, login, _ = a.call("POST", "/api/admin/logins", {"login": "fence01", "staff": True})
+        self.assertEqual(status, 201, login)
+        self.assertEqual(a.call("POST", f"/api/admin/layers/{only_lines['id']}/logins", {"login_ids": [login["id"]]})[0], 400, "по линиям область не задать")
+        status, got, _ = a.call("POST", f"/api/admin/layers/{layer['id']}/logins", {"login_ids": [login["id"]]})
+        self.assertEqual((status, [u["login"] for u in got["logins"]]), (200, [login["login"]]))
+        users = a.call("GET", "/internal/directory", headers=key)[1]["users"]
+        self.assertEqual(users[login["login"]]["area"], [square])
+        self.assertTrue(all(u["area"] is None for name, u in users.items() if name != login["login"]))
+        shown = next(x for x in a.call("GET", "/api/admin/logins")[1] if x["id"] == login["id"])
+        self.assertEqual(shown["area_layer_name"], "Участок")
+        # То же через карточку логина; удаление слоя снимает ограничение
+        self.assertEqual(a.call("PATCH", f"/api/admin/logins/{login['id']}", {"area_layer_id": None})[0], 200)
+        self.assertIsNone(a.call("GET", "/internal/directory", headers=key)[1]["users"][login["login"]]["area"])
+        self.assertEqual(a.call("PATCH", f"/api/admin/logins/{login['id']}", {"area_layer_id": layer["id"]})[0], 200)
+        self.assertEqual(self.operator_status("DELETE", f"/api/admin/layers/{layer['id']}"), 403)
+        self.assertEqual(a.call("DELETE", f"/api/admin/layers/{layer['id']}")[0], 200)
+        self.assertIsNone(a.call("GET", "/internal/directory", headers=key)[1]["users"][login["login"]]["area"])
+        self.assertEqual(a.call("DELETE", f"/api/admin/layers/{only_lines['id']}")[0], 200)
+        self.assertEqual(a.call("DELETE", f"/api/admin/logins/{login['id']}")[0], 200)
+
+    def operator_status(self, method, path):
+        oper = Client(self.base)
+        if oper.call("POST", "/api/login", {"login": "oper", "password": "operator password"})[0] != 200:
+            return 403
+        return oper.call(method, path)[0]
 
     def test_09b_subnets(self):
         a = self.admin

@@ -118,6 +118,77 @@
     return { north: A * xi, east: A * eta };
   }
 
+  // Обратная проекция Гаусса — Крюгера: север и восток (без смещений зоны) -> широта и разность
+  // долгот с осевым меридианом, радианы. Ряды Крюгера, как и в прямой задаче.
+  function gaussKrugerInverse(north, east, ell) {
+    const { a, f } = ell;
+    const n = f / (2 - f);
+    const n2 = n * n;
+    const n3 = n2 * n;
+    const n4 = n3 * n;
+    const A = a / (1 + n) * (1 + n2 / 4 + n4 / 64);
+    const beta = [
+      n / 2 - 2 * n2 / 3 + 37 * n3 / 96 - n4 / 360,
+      n2 / 48 + n3 / 15 - 437 * n4 / 1440,
+      17 * n3 / 480 - 37 * n4 / 840,
+      4397 * n4 / 161280,
+    ];
+    const xi = north / A;
+    const eta = east / A;
+    let xi0 = xi;
+    let eta0 = eta;
+    for (let j = 0; j < 4; j++) {
+      const k = 2 * (j + 1);
+      xi0 -= beta[j] * Math.sin(k * xi) * Math.cosh(k * eta);
+      eta0 -= beta[j] * Math.cos(k * xi) * Math.sinh(k * eta);
+    }
+    // Конформная широта -> геодезическая: уточнение по тангенсу, сходится за несколько шагов
+    const e = Math.sqrt(f * (2 - f));
+    const t0 = Math.sin(xi0) / Math.hypot(Math.sinh(eta0), Math.cos(xi0));
+    let t = t0;
+    for (let i = 0; i < 6; i++) {
+      const sigma = Math.sinh(e * Math.atanh(e * t / Math.sqrt(1 + t * t)));
+      const ti = t * Math.sqrt(1 + sigma * sigma) - sigma * Math.sqrt(1 + t * t);
+      t += (t0 - ti) / Math.sqrt(1 + ti * ti) * (1 + (1 - e * e) * t * t) / ((1 - e * e) * Math.sqrt(1 + t * t));
+    }
+    return { lat: Math.atan(t), dLon: Math.atan2(Math.sinh(eta0), Math.cos(xi0)) };
+  }
+
+  // Исходная система -> WGS-84: точное обращение перехода fromWgs84 (решается система 3×3)
+  function toWgs84(v, d) {
+    const wx = d.wx * SEC;
+    const wy = d.wy * SEC;
+    const wz = d.wz * SEC;
+    const k = 1 / (1 + d.m);
+    const m = [[k, -k * wz, k * wy], [k * wz, k, -k * wx], [-k * wy, k * wx, k]];
+    const det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    const inv = [
+      [(m[1][1] * m[2][2] - m[1][2] * m[2][1]) / det, (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det, (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det],
+      [(m[1][2] * m[2][0] - m[1][0] * m[2][2]) / det, (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det, (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det],
+      [(m[1][0] * m[2][1] - m[1][1] * m[2][0]) / det, (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det, (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det],
+    ];
+    return [0, 1, 2].map((i) => inv[i][0] * v[0] + inv[i][1] * v[1] + inv[i][2] * v[2] + [d.dx, d.dy, d.dz][i]);
+  }
+
+  // Плоские координаты -> широта и долгота WGS-84 в градусах. zone — номер зоны (обязателен:
+  // по одним плоским координатам зону не узнать). Высота принимается нулевой: на положение
+  // в плане это влияет на доли миллиметра.
+  function inverse(systemId, north, east, zone) {
+    const system = SYSTEMS.find((s) => s.id === systemId);
+    if (!system) return null;
+    const z = system.zones ? system.zones.find((x) => x.zone === zone) : { lon0: zone * system.zoneWidth - system.zoneWidth / 2, falseEasting: zone * 1e6 + 500000, falseNorthing: 0 };
+    if (!z) return null;
+    const datum = DATUMS[system.datum];
+    const ell = ELLIPSOIDS[datum.ellipsoid];
+    const g = gaussKrugerInverse(north - z.falseNorthing, east - z.falseEasting, ell);
+    const lon = z.lon0 * D2R + g.dLon;
+    const e2 = ell.f * (2 - ell.f);
+    const N = ell.a / Math.sqrt(1 - e2 * Math.sin(g.lat) ** 2);
+    const local = [N * Math.cos(g.lat) * Math.cos(lon), N * Math.cos(g.lat) * Math.sin(lon), N * (1 - e2) * Math.sin(g.lat)];
+    const w = toGeodetic(toWgs84(local, datum), { a: 6378137, f: 1 / 298.257223563 });
+    return { lat: w.lat / D2R, lon: w.lon / D2R };
+  }
+
   function pickZone(system, lonDeg) {
     if (system.zones) {
       // Последняя зона, которая начинается западнее станции
@@ -151,5 +222,5 @@
     };
   }
 
-  return { list, register, convert, gaussKruger, fromWgs84, toGeodetic, ELLIPSOIDS, DATUMS };
+  return { list, register, convert, inverse, gaussKruger, gaussKrugerInverse, fromWgs84, toWgs84, toGeodetic, ELLIPSOIDS, DATUMS };
 });
