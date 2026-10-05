@@ -65,6 +65,9 @@ function validate(config) {
     }
     if (src.mode === 'ntrip' && !src.mountpoint) throw new Error(`${where}: у источника NTRIP не указана точка подключения (source.mountpoint).`);
     if (src.mode === 'listen') checkPort(src.port, `${where}.source.port`);
+    if (src.allow !== undefined && (!Array.isArray(src.allow) || src.allow.some((a) => typeof a !== 'string'))) {
+      throw new Error(`${where}: список разрешённых адресов (source.allow) — список строк вида «1.2.3.4» или «10.0.0.0/8».`);
+    }
     if (src.mode === 'sim' && !(Number.isFinite(src.lat) && Number.isFinite(src.lon))) {
       throw new Error(`${where}: имитатору нужны широта и долгота (source.lat, source.lon).`);
     }

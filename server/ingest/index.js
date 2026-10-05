@@ -7,6 +7,7 @@
 const { StationHub } = require('../../core/station');
 const { createSimulator, syntheticSource } = require('../../core/simulator');
 const { BusServer } = require('../shared/bus');
+const { StationGate } = require('./gate');
 const { jsonServer } = require('../shared/http');
 const { loadConfig, credentials } = require('../shared/config');
 
@@ -24,6 +25,7 @@ async function start({ config, secrets, log = console.log }) {
   const startedAt = Date.now();
   const hub = new StationHub();
   const sims = [];
+  const gates = new Map(); // код станции -> шлюз перед ядром
   const bus = new BusServer({ host: config.bind, port: config.ingest.busPort });
 
   // Потребитель при подключении сразу узнаёт состав станций
@@ -39,6 +41,19 @@ async function start({ config, secrets, log = console.log }) {
       const port = await sim.ready;
       sims.push(sim);
       hub.set({ id: station.code, name: station.name || station.code, mode: 'tcp', host: '127.0.0.1', port, simulated: true });
+    } else if (station.source.mode === 'listen') {
+      // База сама шлёт поток на свой порт. Перед ядром стоит шлюз: адрес, пароль станции
+      // и правило «живое соединение молчащим не заменяется». Ядро читает шлюз как обычный порт.
+      const gate = await new StationGate({
+        code: station.code,
+        host: config.ingest.publicBind || config.bind,
+        port: station.source.port,
+        allow: station.source.allow || [],
+        password: (secrets.stationPasswords && secrets.stationPasswords[station.code]) || '',
+        log,
+      }).ready;
+      gates.set(station.code, gate);
+      hub.set({ id: station.code, name: station.name || station.code, mode: 'tcp', host: '127.0.0.1', port: gate.pipePort });
     } else {
       hub.set(sessionConfig(station, secrets));
     }
@@ -50,6 +65,7 @@ async function start({ config, secrets, log = console.log }) {
       startedAt,
       consumers: bus.clients.size,
       stations: hub.snapshots(),
+      gates: [...gates.values()].map((g) => g.snapshot()),
     }),
   }, { host: config.bind, port: config.ingest.statePort });
 
@@ -59,9 +75,10 @@ async function start({ config, secrets, log = console.log }) {
   return {
     ports,
     hub,
+    gates,
     async stop() {
       hub.stopAll();
-      await Promise.all([bus.close(), state.close(), ...sims.map((s) => s.close())]);
+      await Promise.all([bus.close(), state.close(), ...sims.map((s) => s.close()), ...[...gates.values()].map((g) => g.close())]);
     },
   };
 }

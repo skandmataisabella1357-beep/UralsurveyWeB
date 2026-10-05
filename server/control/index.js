@@ -59,6 +59,7 @@ async function start({ config, log = console.log, usingExample = false }) {
     '/api/state': async () => {
       const [ingest, caster] = await Promise.all([getJson(ingestUrl), getJson(casterUrl)]);
       const feeds = new Map(((caster && caster.feeds) || []).map((f) => [f.station, f]));
+      const gates = new Map(((ingest && ingest.gates) || []).map((g) => [g.code, g]));
       return {
         at: Date.now(),
         usingExample,
@@ -69,7 +70,7 @@ async function start({ config, log = console.log, usingExample = false }) {
             : { up: false },
           control: { up: true, startedAt },
         },
-        stations: ((ingest && ingest.stations) || []).map((s) => ({ ...s, feed: feeds.get(s.id) || null })),
+        stations: ((ingest && ingest.stations) || []).map((s) => ({ ...s, feed: feeds.get(s.id) || null, gate: gates.get(s.id) || null })),
       };
     },
   }, { host: config.bind, port: config.control.port, fallback: serveStatic });

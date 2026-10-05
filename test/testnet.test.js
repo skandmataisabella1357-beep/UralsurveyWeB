@@ -55,8 +55,7 @@ test('сервер принимает базы с неисправностями
   const bases = [];
   try {
     for (const s of stations) {
-      const session = service.hub.sessions.get(s.code);
-      const port = await until(() => session.transport.server && session.transport.server.address() && session.transport.server.address().port);
+      const port = service.gates.get(s.code).port;
       const base = new TestBase({ station: { ...s, port }, host: '127.0.0.1' });
       bases.push(base);
       base.start();

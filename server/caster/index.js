@@ -53,7 +53,9 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
   const R = { ...RULES, ...rules };
   const startedAt = Date.now();
   const cfg = config.caster;
-  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(config.bind);
+  // Порт для роверов может слушать другой адрес, чем внутренние порты служб
+  const publicBind = cfg.publicBind || config.bind;
+  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(publicBind);
   if (cfg.openAccess && !loopback) {
     throw new Error('Раздача без проверки логина (caster.openAccess) разрешена только на адресе 127.0.0.1.');
   }
@@ -248,7 +250,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
         bitrate: Math.round(feed.rate * 8 / 100) * 100,
       });
     }
-    return ntrip.sourcetable({ host: cfg.publicHost || config.bind, port: actualPort, points: list });
+    return ntrip.sourcetable({ host: cfg.publicHost || publicBind, port: actualPort, points: list });
   }
 
   // Порядок проверок — как в ТЗ: разбор, блокировка, таблица, точка, пароль, запись, подписка, лимит, станция
@@ -391,7 +393,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
     server.connectionsCount = 0;
     actualPort = await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(cfg.port, config.bind, () => resolve(server.address().port));
+      server.listen(cfg.port, publicBind, () => resolve(server.address().port));
     });
   }
 
@@ -425,7 +427,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {} }) {
 
   const ports = { state: await state.ready, ntrip: server ? actualPort : null };
   log(server
-    ? `раздача: NTRIP на ${config.bind}:${actualPort}, точек ${points.size}${cfg.openAccess ? ', без проверки логина (только для проверки на своём компьютере)' : ''}`
+    ? `раздача: NTRIP на ${publicBind}:${actualPort}, точек ${points.size}${cfg.openAccess ? ', без проверки логина (только для проверки на своём компьютере)' : ''}`
     : 'раздача: порт для роверов выключен в настройках (caster.enabled)');
 
   return {

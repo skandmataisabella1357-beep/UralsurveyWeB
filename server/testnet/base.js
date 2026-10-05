@@ -69,6 +69,7 @@ class TestBase {
       if (this.fault === 'drop') this.later(() => this.drop(this.between(3000, 10000)), this.between(45000, 90000));
       if (this.fault === 'flap') this.later(() => this.drop(this.between(1000, 4000)), this.between(5000, 8000));
       if (this.fault === 'duplicate') this.later(() => this.duplicate(), this.between(15000, 30000));
+      if (this.fault === 'intruder' && !this.intruding) this.intrude();
     });
     socket.on('error', () => {});
     socket.on('close', () => {
@@ -100,6 +101,15 @@ class TestBase {
     extra.on('error', () => {});
     extra.on('close', () => { if (this.extra === extra) this.extra = null; });
     this.later(() => this.duplicate(), this.between(15000, 30000));
+  }
+
+  // Чужое подключение к порту станции: молчит и ждёт, что сервер отдаст ему место базы
+  intrude() {
+    this.intruding = true;
+    const socket = net.connect({ host: this.host, port: this.station.port });
+    socket.on('error', () => {});
+    socket.on('close', () => { if (this.running) this.later(() => this.intrude(), this.between(4000, 9000)); });
+    this.timers.add(setTimeout(() => socket.destroy(), 60000));
   }
 
   write(data) {
