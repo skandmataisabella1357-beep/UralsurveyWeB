@@ -35,13 +35,14 @@
       name: 'МСК-66',
       datum: 'sk42',
       verified: true,
-      // Зона выбирается сама по долготе станции. from — долгота, с которой зона начинается.
-      // По каталогу заказчика первая зона доходит как минимум до 63°41′ (станция TOUR);
-      // где начинается вторая, он ещё не сообщил — граница условная.
+      // Зоны шестиградусные (со слов заказчика, 06.10.2026): осевой первой зоны 60°03′, второй —
+      // 66°03′, граница между ними 63°03′. Зона выбирается сама по долготе станции;
+      // from — долгота, с которой зона начинается. Первая зона сверена с каталогом, для второй
+      // и третьей контрольной таблицы нет (verified: false) — окно обязано об этом сказать.
       zones: [
         { zone: 1, lon0: 60.05, from: -Infinity, falseEasting: 1500000, falseNorthing: -5911057.63 },
-        { zone: 2, lon0: 63.05, from: 64.55, falseEasting: 2500000, falseNorthing: -5911057.63 },
-        { zone: 3, lon0: 66.05, from: 66.05, falseEasting: 3500000, falseNorthing: -5911057.63 },
+        { zone: 2, lon0: 66.05, from: 63.05, falseEasting: 2500000, falseNorthing: -5911057.63, verified: false },
+        { zone: 3, lon0: 72.05, from: 69.05, falseEasting: 3500000, falseNorthing: -5911057.63, verified: false },
       ],
     },
   ];
@@ -143,7 +144,7 @@
       system: system.id,
       name: system.name,
       datum: datum.name,
-      verified: system.verified,
+      verified: system.verified && z.verified !== false,
       zone: z.zone,
       north: p.north + z.falseNorthing,
       east: p.east + z.falseEasting,

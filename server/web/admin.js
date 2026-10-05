@@ -274,7 +274,7 @@
     $('nav').innerHTML = NAV.filter((id) => !VIEWS[id].adminOnly || isAdmin()).map((id) => `<button class="tile" type="button" data-view="${id}" data-tip="view:${id}" aria-current="${id === view}" aria-label="${esc(VIEWS[id].title)}">
       <svg viewBox="0 0 24 24" aria-hidden="true">${ICON[id]}</svg></button>`).join('')
       // Внизу ленты — что показывать на карте: значки-переключатели, без отдельного окна
-      + `<span class="adm-ribbon-gap"></span>${SHOW_TILES.map(([id, title, icon]) => `<button class="tile adm-show" type="button" role="switch" data-show="${id}" data-tip="show:${id}" aria-checked="${id === 'radii' ? SHOW.fix || SHOW.float || SHOW.over : SHOW[id]}" aria-label="${title}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></button>`).join('')}`;
+      + `<span class="adm-ribbon-gap"></span>${SHOW_TILES.map(([id, title, icon]) => `<button class="tile adm-show" type="button" role="switch" data-show="${id}" data-tip="show:${id}" aria-checked="${id === 'base' ? true : id === 'radii' ? SHOW.fix || SHOW.float || SHOW.over : (id === 'cs' ? SHOW.msk || SHOW.sk42 || SHOW.gsk : SHOW[id])}" aria-label="${title}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></button>`).join('')}`;
   }
   // ---------- Каталог сети слева: станции и подсети, как в приложении ----------
 
@@ -346,7 +346,10 @@
     const show = event.target.closest('[data-show]');
     if (show) {
       // Зоны покрытия: значок включает и выключает обе сразу; по отдельности — во всплывающем окне
-      if (show.dataset.show === 'radii') { const on = !(SHOW.fix || SHOW.float || SHOW.over); SHOW.fix = on; SHOW.float = on; if (!on) SHOW.over = false; }
+      // Подложка: щелчок по значку переключает на следующую; выбор конкретной — во всплывающем окне
+      if (show.dataset.show === 'base') { const ids = Object.keys(BASES); SHOW.base = ids[(ids.indexOf(SHOW.base) + 1) % ids.length]; }
+      else if (show.dataset.show === 'cs') { const on = !(SHOW.msk || SHOW.sk42 || SHOW.gsk); SHOW.msk = on; if (!on) { SHOW.sk42 = false; SHOW.gsk = false; } }
+      else if (show.dataset.show === 'radii') { const on = !(SHOW.fix || SHOW.float || SHOW.over); SHOW.fix = on; SHOW.float = on; if (!on) SHOW.over = false; }
       else SHOW[show.dataset.show] = !SHOW[show.dataset.show];
       applyDisplay();
       render();
@@ -464,12 +467,37 @@
   // ---------- Отображение: что показывать на карте ----------
   // Настройки запоминаются в браузере администратора.
 
-  const SHOW = { labels: true, grid: true, regions: true, fix: false, float: false, over: false, contours: true, vectors: true, rovers: true };
+  const SHOW = { base: 'osm', labels: true, grid: true, regions: true, msk: false, sk42: false, gsk: false, fix: false, float: false, over: false, contours: true, vectors: true, rovers: true };
   try { Object.assign(SHOW, JSON.parse(localStorage.getItem('admin-display') || '{}')); } catch (err) { /* настройки по умолчанию */ }
+  // Подложки карты. Все открытые, без ключей; filter — как подложка перекрашивается под тёмную тему
+  const BASES = {
+    osm: { title: 'Схема', about: 'OpenStreetMap: дороги, города, названия.', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', zoom: 19, by: '© участники OpenStreetMap' },
+    holo: { title: 'Голограмма', about: 'Та же схема, но светящимися линиями на тёмном поле: дороги, реки, границы и подписи переливаются от бирюзового к фиолетовому.', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', zoom: 19, by: '© участники OpenStreetMap' },
+    relief: { title: 'Рельеф', about: 'Цветная отмывка рельефа: хребты Урала, увалы, долины рек. Без подписей — только формы местности.', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', zoom: 13, by: 'Рельеф: Esri, USGS, NOAA' },
+    topo: { title: 'Топокарта', about: 'OpenTopoMap: рельеф с горизонталями, леса, реки и подписи.', url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', zoom: 17, by: '© участники OpenStreetMap, SRTM · стиль OpenTopoMap (CC-BY-SA)' },
+    sat: { title: 'Спутник', about: 'Космические снимки.', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', zoom: 18, by: 'Снимки: Esri, Maxar, Earthstar Geographics' },
+  };
+  if (!BASES[SHOW.base]) SHOW.base = 'osm';
+  let baseNow = null;
+  let baseLayer = null;
+  function drawBase() {
+    if (!map || baseNow === SHOW.base) return;
+    // Первую подложку ставит сама карта приложения: находим её и заменяем
+    if (!baseLayer) map.eachLayer((l) => { if (l instanceof L.TileLayer) baseLayer = l; });
+    if (baseLayer) baseLayer.remove();
+    const b = BASES[SHOW.base];
+    baseLayer = L.tileLayer(b.url, { maxZoom: 19, maxNativeZoom: b.zoom, attribution: b.by, referrerPolicy: 'strict-origin-when-cross-origin' }).addTo(map);
+    baseLayer.bringToBack();
+    for (const id of Object.keys(BASES)) document.body.classList.toggle(`map-${id}`, id === SHOW.base);
+    baseNow = SHOW.base;
+  }
+
   const SHOW_TILES = [
+    ['base', 'Подложка карты', '<path d="M12 4 3 9l9 5 9-5ZM3 14l9 5 9-5" /><path d="M3 11.500l9 5 9-5" opacity="0.5"/>'],
     ['labels', 'Подписи станций', '<path d="M4 7h16M4 12h10M4 17h7"/>'],
     ['grid', 'Градусная сетка', '<path d="M4 4h16v16H4ZM4 10h16M4 15h16M10 4v16M15 4v16"/>'],
     ['regions', 'Границы областей', '<path d="M6 5l5-2 4 3 4 1 1 6-3 5-6 3-5-3-2-6Z"/><path d="M11 3l1 6-4 4M12 9l5 3" stroke-dasharray="2 2.500"/>'],
+    ['cs', 'Зоны систем координат', '<path d="M5 3v18M12 3v18M19 3v18" stroke-dasharray="3 2.500"/><path d="M3 8h18M3 16h18" opacity="0.5"/>'],
     ['radii', 'Зоны покрытия', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.500"/><circle cx="12" cy="12" r="9.500" stroke-dasharray="2 3"/>'],
     ['contours', 'Контуры подсетей', '<path d="M5 8 13 4l6 6-3 9-9-2Z" stroke-dasharray="3 3"/>'],
     ['vectors', 'Векторы расчёта', '<path d="M5 18 12 6l7 12Z"/><circle cx="5" cy="18" r="1.500"/><circle cx="12" cy="6" r="1.500"/><circle cx="19" cy="18" r="1.500"/>'],
@@ -506,11 +534,22 @@
       return `<b>${esc(VIEWS[id].title)}</b>${c && more ? `<p>${more()}</p>` : ''}`;
     }
     const title = SHOW_TILES.find((t) => t[0] === id)[1];
+    if (id === 'base') {
+      return `<b>Подложка карты</b><p>${BASES[SHOW.base].about}</p>
+        <div class="adm-tip-row">${Object.entries(BASES).map(([k, b]) => `<button class="adm-chip" type="button" data-base="${k}" aria-current="${k === SHOW.base}">${b.title}</button>`).join('')}</div>
+        <p>Щелчок по значку переключает подложки по кругу.</p>`;
+    }
+    if (id === 'cs') {
+      const chip = (k, text, color) => `<button class="adm-chip" type="button" data-zone="${k}" aria-current="${SHOW[k]}"><i style="background:${color}"></i>${text}</button>`;
+      return `<b>Зоны систем координат</b><p>Границы зон и осевые меридианы поверх карты.</p>
+        <div class="adm-tip-row">${chip('msk', 'МСК-66 · зоны по 6°, осевые 60°03′ и 66°03′', CS_COLOR.msk)}${chip('sk42', 'СК-42 · зоны Гаусса — Крюгера по 6°', CS_COLOR.sk42)}${chip('gsk', 'ГСК-2011 · зоны по 6°', CS_COLOR.gsk)}</div>
+        <p>Сплошная линия — граница зон, пунктир — осевой меридиан.</p>`;
+    }
     if (id !== 'radii') return `<b>${title}</b><span class="adm-tip-state ${SHOW[id] ? 'is-on' : ''}">${SHOW[id] ? 'показано' : 'скрыто'}</span><p>${TIP_SHOW[id]}</p>`;
     const one = Object.values(radiiNow())[0];
     const chip = (k, text, color) => `<button class="adm-chip" type="button" data-zone="${k}" aria-current="${SHOW[k]}"><i style="background:${color}"></i>${text}</button>`;
     return `<b>Зоны покрытия</b><p>Где ровер получит решение — по расчёту сети, вокруг станций на связи.</p>
-      <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, '#5df2b0')}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, '#ffc48e')}${chip('over', 'Перекрытие фикса · две базы и больше', '#84c8ff')}</div>
+      <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, reachColors().fix[0])}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, reachColors().float[0])}${chip('over', 'Перекрытие фикса · две базы и больше', reachColors().over[0])}</div>
       <p>${one ? `Ионосфера сейчас: ${num(one.iono_ppm, 1)} мм на км. Вне зон сеть ровера не покрывает.` : 'Расчёта сети ещё не было: запустите расчёт подсети — зоны появятся вокруг её станций.'}</p>`;
   }
   function showTip(el) {
@@ -533,9 +572,11 @@
   $('tip').addEventListener('mouseenter', () => clearTimeout(tipTimer));
   $('tip').addEventListener('mouseleave', hideTip);
   $('tip').addEventListener('click', (event) => {
+    const base = event.target.closest('[data-base]');
     const zone = event.target.closest('[data-zone]');
-    if (!zone) return;
-    SHOW[zone.dataset.zone] = !SHOW[zone.dataset.zone];
+    if (!zone && !base) return;
+    if (base) SHOW.base = base.dataset.base;
+    else SHOW[zone.dataset.zone] = !SHOW[zone.dataset.zone];
     applyDisplay();
     const key = tipFor;
     render();
@@ -556,6 +597,58 @@
       }
     }
     return out;
+  }
+
+  // Зоны систем координат: границы зон и осевые меридианы. Все три системы — шестиградусные.
+  // МСК-66: осевые 60°03′ и 66°03′, граница зон 63°03′ (со слов заказчика). СК-42 и ГСК-2011 —
+  // зоны Гаусса — Крюгера: номер зоны = долгота / 6 + 1.
+  const CS_COLOR = { msk: '#c9a6ff', sk42: '#ffc48e', gsk: '#7fe0ff' };
+  const csZones = { layer: null, key: '' };
+  function csLines() {
+    const out = [];
+    const deg = (v) => { const d = Math.floor(v); const m = Math.round((v - d) * 60); return `${d}°${m ? `${String(m).padStart(2, '0')}′` : ''}`; };
+    if (SHOW.msk) {
+      // Зоны МСК-66 шестиградусные: осевой первой зоны 60°03′, второй — 66°03′, граница между ними 63°03′
+      [[1, 60.05], [2, 66.05]].forEach(([zone, lon]) => out.push({ sys: 'msk', lon, axis: true, text: `МСК-66 · зона ${zone} · осевой ${deg(lon)}` }));
+      out.push({ sys: 'msk', lon: 57.05, axis: false, text: 'МСК-66 · западная граница зоны 1' });
+      out.push({ sys: 'msk', lon: 63.05, axis: false, text: 'МСК-66 · граница зон 1 | 2' });
+      out.push({ sys: 'msk', lon: 69.05, axis: false, text: 'МСК-66 · восточная граница зоны 2' });
+    }
+    for (const [sys, name] of [['sk42', 'СК-42'], ['gsk', 'ГСК-2011']]) {
+      if (!SHOW[sys]) continue;
+      for (let lon = 48; lon <= 78; lon += 6) {
+        const zone = lon / 6 + 1;
+        out.push({ sys, lon, axis: false, text: `${name} · граница зон ${zone - 1} | ${zone}` });
+        out.push({ sys, lon: lon + 3, axis: true, text: `${name} · зона ${zone} · осевой ${deg(lon + 3)}` });
+      }
+    }
+    return out;
+  }
+  function drawZones() {
+    if (!map) return;
+    const lines = csLines();
+    const b = map.getBounds();
+    const key = JSON.stringify([SHOW.msk, SHOW.sk42, SHOW.gsk, b.getNorth().toFixed(2), b.getSouth().toFixed(2), b.getWest().toFixed(2), b.getEast().toFixed(2)]);
+    if (key === csZones.key) return;
+    csZones.key = key;
+    if (csZones.layer) { csZones.layer.remove(); csZones.layer = null; }
+    if (!lines.length) return;
+    const pane = map.getPane('cszones') || map.createPane('cszones');
+    pane.style.zIndex = 345;
+    pane.style.pointerEvents = 'none';
+    const layers = [];
+    // Подписи — у верхнего края видимой карты, у каждой системы своя строка, чтобы не слипались
+    const rows = { msk: 0.13, sk42: 0.2, gsk: 0.27 };
+    for (const l of lines) {
+      const color = CS_COLOR[l.sys];
+      // ГСК-2011 совпадает по линиям с СК-42: рисуется шире и бледнее, чтобы обе были видны
+      const wide = l.sys === 'gsk';
+      layers.push(L.polyline([[40, l.lon], [75, l.lon]], { pane: 'cszones', color, weight: wide ? 3 : (l.axis ? 1 : 1.5), opacity: wide ? 0.28 : (l.axis ? 0.6 : 0.9), dashArray: l.axis ? '6 7' : null, interactive: false, className: `adm-cs adm-cs-${l.sys}` }));
+      if (l.lon <= b.getWest() || l.lon >= b.getEast()) continue;
+      const lat = b.getNorth() - (b.getNorth() - b.getSouth()) * (rows[l.sys] + (l.axis ? 0 : 0.035));
+      layers.push(L.marker([lat, l.lon], { pane: 'cszones', interactive: false, icon: L.divIcon({ className: `adm-cs-label adm-cs-${l.sys}`, html: `<span style="color:${color}">${esc(l.text)}</span>`, iconSize: [10, 14], iconAnchor: [-6, 7] }) }));
+    }
+    csZones.layer = L.layerGroup(layers).addTo(map);
   }
 
   // Границы областей: Свердловская — светящейся линией, соседи — тонким пунктиром с названиями
@@ -597,6 +690,25 @@
   let overlayKey = '';
   const reach = { float: null, fix: null, over: null }; // слои зон покрытия: создаются при первой отрисовке
 
+  // Цвета зон подбираются под подложку, чтобы их было хорошо видно: на тёмной схеме и голограмме
+  // хватает мягких тонов, на светлой топокарте и на снимках нужны плотные и контрастные.
+  // Для каждой зоны: цвет и плотность заливки.
+  const REACH_COLORS = {
+    dark: { fix: ['#5df2b0', 0.26], float: ['#ffc48e', 0.13], over: ['#84c8ff', 0.34] },
+    holo: { fix: ['#c8ff4d', 0.3], float: ['#ff8fd0', 0.16], over: ['#ffffff', 0.3] },
+    relief: { fix: ['#6dffb4', 0.36], float: ['#ffd27a', 0.2], over: ['#ffffff', 0.3] },
+    light: { fix: ['#00a85a', 0.42], float: ['#ff7a00', 0.22], over: ['#2a4dff', 0.4] },
+    sat: { fix: ['#7dffea', 0.36], float: ['#ffd84d', 0.22], over: ['#ff7ad9', 0.4] },
+  };
+  function reachColors() {
+    const lightTheme = window.Theme.current() !== 'dark';
+    if (SHOW.base === 'holo') return REACH_COLORS.holo;
+    if (SHOW.base === 'sat') return REACH_COLORS.sat;
+    if (SHOW.base === 'topo') return REACH_COLORS.light;
+    if (SHOW.base === 'relief') return lightTheme ? REACH_COLORS.light : REACH_COLORS.relief;
+    return lightTheme ? REACH_COLORS.light : REACH_COLORS.dark;
+  }
+
   // Общая часть зон фиксированного решения двух станций: [[широта, долгота], ...] или null.
   // Точки каждой окружности, попавшие внутрь другой, обходятся по углу вокруг середины.
   function overlapOf([, latA, lonA, rA], [, latB, lonB, rB]) {
@@ -622,7 +734,10 @@
     const stations = (live ? live.stations : []).filter((st) => st.position && st.link.state === 'online' && radii[st.id]).map((st) => [st.id, st.position.lat, st.position.lon, radii[st.id].fix_km, radii[st.id].float_km]);
     const nets = SHOW.contours ? lists.subnets.filter((g) => g.contour.length >= 3 && !(view === 'subnets' && sub.id === g.id) && !sub.drawing).map((g) => [g.name, g.contour]) : [];
     const rovers = SHOW.rovers ? (live ? live.clients : []).filter((c) => c.position).map((c) => [c.login, c.point, c.position.lat, c.position.lon, c.position.kind]) : [];
-    const key = JSON.stringify([stations, nets, rovers, SHOW.fix, SHOW.float, SHOW.over]);
+    // Выбранная станция: её круги фикса и плавающего решения выделяются ярче общей зоны
+    const chosen = view === 'stations' && picked ? (rows.find((r) => r.id === picked) || {}).code : null;
+    const tone = reachColors();
+    const key = JSON.stringify([stations, nets, rovers, SHOW.fix, SHOW.float, SHOW.over, chosen, tone]);
     if (key === overlayKey) return;
     overlayKey = key;
     if (overlay) overlay.remove();
@@ -631,16 +746,24 @@
     // Зоны, а не круги: круги каждой зоны сливаются в одно ровное пятно без внутренних границ.
     // Жёлтое — плавающее решение, зелёное поверх — фиксированное, без заливки — сеть не покрывает.
     if (!reach.float) {
-      for (const [name, z, color, opacity] of [['reachFloat', 350, '#ffc48e', 0.13], ['reachFix', 360, '#5df2b0', 0.26], ['reachOver', 370, '#84c8ff', 0.34]]) {
+      for (const [name, z] of [['reachFloat', 350], ['reachFix', 360], ['reachOver', 370]]) {
         const pane = map.createPane(name);
         pane.style.zIndex = z;
         pane.style.pointerEvents = 'none';
-        pane.style.opacity = opacity;
-        pane.style.filter = `drop-shadow(0 0 3px ${color})`;
       }
       reach.float = L.svg({ pane: 'reachFloat' });
       reach.fix = L.svg({ pane: 'reachFix' });
       reach.over = L.svg({ pane: 'reachOver' });
+    }
+    const mine = chosen ? stations.find((st) => st[0] === chosen) : null;
+    if (mine) {
+      const [code, lat, lon, fix, float] = mine;
+      if (SHOW.float) layers.push(L.circle([lat, lon], { radius: float * 1000, color: tone.float[0], weight: 1.6, opacity: 0.95, dashArray: '5 6', fillColor: tone.float[0], fillOpacity: 0.06, interactive: false, className: 'adm-reach-mine' }));
+      if (SHOW.fix) layers.push(L.circle([lat, lon], { radius: fix * 1000, color: tone.fix[0], weight: 1.8, opacity: 1, fillColor: tone.fix[0], fillOpacity: 0.16, interactive: false, className: 'adm-reach-mine' }).bindTooltip(`${esc(code)}: фикс до ${num(fix, 0)} км, плавающее до ${num(float, 0)} км`, { permanent: false }));
+    }
+    for (const [name, k] of [['reachFloat', 'float'], ['reachFix', 'fix'], ['reachOver', 'over']]) {
+      map.getPane(name).style.opacity = tone[k][1];
+      map.getPane(name).style.filter = `drop-shadow(0 0 3px ${tone[k][0]})`;
     }
     // Перекрытие: где фиксированное решение дают сразу две базы и больше — запас на случай,
     // если одна из них пропадёт. Рисуются общие части зон каждой пары станций.
@@ -648,12 +771,12 @@
       for (let i = 0; i < stations.length; i++) {
         for (let j = i + 1; j < stations.length; j++) {
           const lens = overlapOf(stations[i], stations[j]);
-          if (lens) layers.push(L.polygon(lens, { stroke: false, fillColor: '#84c8ff', fillOpacity: 1, interactive: false, pane: 'reachOver', renderer: reach.over }));
+          if (lens) layers.push(L.polygon(lens, { stroke: false, fillColor: tone.over[0], fillOpacity: 1, interactive: false, pane: 'reachOver', renderer: reach.over }));
         }
       }
     }
-    if (SHOW.float) for (const [, lat, lon, , float] of stations) layers.push(L.circle([lat, lon], { radius: float * 1000, stroke: false, fillColor: '#ffc48e', fillOpacity: 1, interactive: false, pane: 'reachFloat', renderer: reach.float }));
-    if (SHOW.fix) for (const [, lat, lon, fix] of stations) layers.push(L.circle([lat, lon], { radius: fix * 1000, stroke: false, fillColor: '#5df2b0', fillOpacity: 1, interactive: false, pane: 'reachFix', renderer: reach.fix }));
+    if (SHOW.float) for (const [, lat, lon, , float] of stations) layers.push(L.circle([lat, lon], { radius: float * 1000, stroke: false, fillColor: tone.float[0], fillOpacity: 1, interactive: false, pane: 'reachFloat', renderer: reach.float }));
+    if (SHOW.fix) for (const [, lat, lon, fix] of stations) layers.push(L.circle([lat, lon], { radius: fix * 1000, stroke: false, fillColor: tone.fix[0], fillOpacity: 1, interactive: false, pane: 'reachFix', renderer: reach.fix }));
     for (const [name, contour] of nets) layers.push(L.polygon(contour, { color: '#a890ff', weight: 1.5, dashArray: '5 6', fillColor: '#a890ff', fillOpacity: 0.04, interactive: false }).bindTooltip(esc(name), { permanent: true, direction: 'center', className: 'adm-net-label' }));
     for (const [login, point, lat, lon, kind] of rovers) {
       const [color, text] = ROVER[kind] || ['#8a86a8', 'решение неизвестно'];
@@ -693,11 +816,15 @@
         sub.rubber.setLatLngs([...sub.draft.contour, event.latlng, sub.draft.contour[0]]);
       });
       map.on('dblclick', () => { if (sub.drawing) openStep('contour'); });
+      // Подписи зон систем координат держатся у верхнего края видимой карты
+      map.on('moveend', drawZones);
     }
     const selected = view === 'stations' && picked ? (rows.find((r) => r.id === picked) || {}).code : null;
     // Подпись знака — код станции
     window.StationMap.update((live ? live.stations : []).filter((st) => st.position).map((st) => ({ ...st, name: st.id })), selected || null);
+    drawBase();
     drawRegions();
+    drawZones();
     drawContour();
     drawVectors();
     drawOverlay();
@@ -734,6 +861,7 @@
         rowsHtml = `<dt>Север, X</dt><dd class="fig">${num(flat.north, exact ? 3 : 0)}<span>м</span></dd><dt>Восток, Y</dt><dd class="fig">${num(flat.east, exact ? 3 : 0)}<span>м</span></dd>
           <dt>Высота</dt><dd class="fig">${num(pos.h, exact ? 3 : 0)}<span>м над эллипсоидом WGS-84</span></dd>`;
         note += ` Плоские координаты: ${esc(flat.name)}, зона ${flat.zone}, на основе ${esc(flat.datum)}.`;
+        if (!flat.verified) note += ' <b>Параметры этой зоны с каталогом не сверены</b>: расхождение с каталожными координатами возможно.';
       } else {
         const la = dms(pos.lat, 'lat', exact ? 5 : 1);
         const lo = dms(pos.lon, 'lon', exact ? 5 : 1);

@@ -73,6 +73,12 @@ test('МСК-66: Екатеринбург попадает в зону 1 с ож
   assert.ok(p.east > 1530000 && p.east < 1540000, `восток ${p.east}`);
   // Зона выбирается сама: дальний восток области уходит во вторую
   assert.equal(cs.convert('msk66', llhToEcef(57.09 * D2R, 61.68 * D2R, 190)).zone, 1);
+  // Зоны шестиградусные: граница первой и второй — 63°03′, осевой второй — 66°03′
+  assert.equal(cs.convert('msk66', llhToEcef(58.0 * D2R, 63.0 * D2R, 60)).zone, 1);
+  const second = cs.convert('msk66', llhToEcef(58.0 * D2R, 66.05 * D2R, 60));
+  assert.equal(second.zone, 2);
+  assert.ok(Math.abs(second.east - 2500000) < 200, String(second.east)); // на осевом меридиане восток ≈ 2 500 000
+  assert.equal(second.verified, false);
   assert.equal(cs.convert('msk66', llhToEcef(58.0 * D2R, 65.0 * D2R, 60)).zone, 2);
 });
 

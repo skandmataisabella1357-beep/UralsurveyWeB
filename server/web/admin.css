@@ -295,3 +295,44 @@ body.adm #graticule { z-index: 3; filter: drop-shadow(0 0 3px rgba(93, 242, 176,
 /* Границы областей */
 .adm-region-main { filter: drop-shadow(0 0 4px #a890ff) drop-shadow(0 0 10px rgba(132, 200, 255, 0.45)); }
 .adm-region-label { color: rgba(170, 215, 255, 0.55); font-size: 10.5px; font-weight: 450; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; white-space: nowrap; pointer-events: none; }
+
+/* Зоны систем координат */
+.adm-cs { filter: drop-shadow(0 0 2px currentColor); }
+.adm-cs-label span { display: inline-block; padding: 1px 6px; border-radius: 6px; background: rgba(20, 16, 44, 0.72); font-size: 10px; font-weight: 450; letter-spacing: 0.03em; white-space: nowrap; }
+
+/* Подложки: у каждой своя окраска под тёмную тему. Схема — как раньше (переменная темы);
+   рельеф — цветная отмывка, затемнённая до холодного сине-фиолетового; топокарта и спутник — приглушены */
+body.adm.map-relief img.leaflet-tile { filter: brightness(0.45) contrast(2.1) sepia(0.75) hue-rotate(185deg) saturate(2.4); }
+body.adm.map-relief .map-tint { background: linear-gradient(135deg, rgba(150, 110, 255, 0.55), rgba(60, 230, 190, 0.3) 55%, rgba(90, 160, 255, 0.5)); mix-blend-mode: soft-light; }
+body.adm.map-topo img.leaflet-tile { filter: brightness(0.72) contrast(1.08) saturate(0.85); }
+body.adm.map-sat img.leaflet-tile { filter: brightness(0.78) saturate(0.9); }
+body.adm.map-topo .map-tint, body.adm.map-sat .map-tint { display: none; }
+:root[data-theme='light'] body.adm.map-relief img.leaflet-tile { filter: saturate(1.1); }
+:root[data-theme='light'] body.adm.map-relief .map-tint { display: none; }
+:root[data-theme='light'] body.adm.map-topo img.leaflet-tile, :root[data-theme='light'] body.adm.map-sat img.leaflet-tile { filter: none; }
+
+/* Значки станций в каталоге — те же сияющие точки, что на карте */
+.rail .station { --dot: #8a86a8; }
+.rail .station.is-online { --dot: #5df2b0; }
+.rail .station.is-fail { --dot: #ff5d7d; }
+.rail .station.is-wait { --dot: #ffc56b; }
+.rail .station-mark { width: 9px; height: 9px; justify-self: center; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0%, color-mix(in srgb, var(--dot) 55%, #fff) 18%, var(--dot) 55%, color-mix(in srgb, var(--dot) 70%, #3a2a8a) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot) 55%, transparent), 0 0 7px 1px color-mix(in srgb, var(--dot) 65%, transparent); }
+.rail .station-mark path, .rail .station-mark circle { display: none; }
+
+/* Голографическая подложка: схема превращается в светящиеся линии на тёмном поле.
+   Каждая плитка обесцвечивается и выворачивается (линии светлые, поле чёрное) и получает цвет;
+   весь слой медленно переливается от бирюзового к фиолетовому. Поверх — едва заметные строки
+   развёртки. Работает одинаково в обеих темах. */
+body.adm.map-holo img.leaflet-tile { filter: grayscale(1) invert(1) brightness(1.7) contrast(2.1) sepia(1) saturate(5); }
+body.adm.map-holo .leaflet-tile-pane { filter: hue-rotate(140deg); animation: adm-holo-map 16s ease-in-out infinite alternate; }
+body.adm.map-holo .map-tint { display: none; }
+body.adm.map-holo .map-wrap { background: radial-gradient(120% 90% at 50% 40%, #0d0a26 0%, #05040f 70%); }
+body.adm.map-holo .map-wrap::after { content: ''; position: absolute; inset: 0; z-index: 650; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(150, 255, 230, 0.05) 0 1px, transparent 1px 4px), radial-gradient(90% 70% at 50% 45%, transparent 55%, rgba(5, 4, 15, 0.55) 100%); }
+@keyframes adm-holo-map { from { filter: hue-rotate(125deg) brightness(1); } 50% { filter: hue-rotate(190deg) brightness(1.12); } to { filter: hue-rotate(255deg) brightness(1); } }
+@media (prefers-reduced-motion: reduce) { body.adm.map-holo .leaflet-tile-pane { animation: none; } }
+
+/* Круги выбранной станции — ярче общей зоны покрытия */
+.adm-reach-mine { filter: drop-shadow(0 0 4px currentColor); }
