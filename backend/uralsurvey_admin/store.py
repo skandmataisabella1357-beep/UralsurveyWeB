@@ -1237,6 +1237,39 @@ class Store:
             self._audit(conn, who, "созданы точки подсети", "subnets", row_id, {"name": row["name"], "points": added})
             return self._subnet_out(conn, row)
 
+    def subnet_ppp(self, who: dict, row_id: int, run: bool) -> dict:
+        """Начать или остановить расчёт абсолютных координат подсети (PPP-AR)."""
+        with self.db.transaction() as conn:
+            row = self._subnet(conn, row_id, lock=True)
+            if run and not row["station_ids"]:
+                raise Problem("В подсети нет станций.")
+            fields = {"ppp_state": "running", "ppp_started_at": dt.datetime.now(dt.timezone.utc), "ppp_results": Jsonb({}), "ppp_results_at": None} if run else {"ppp_state": "stopped"}
+            row = self._update(conn, "subnets", row_id, fields)
+            self._audit(conn, who, "PPP-AR начат" if run else "PPP-AR остановлен", "subnets", row_id, {"name": row["name"]})
+            return self._subnet_out(conn, row)
+
+    def solver_ppp_tasks(self) -> list[dict]:
+        """Подсети, для которых служба расчёта должна посчитать абсолютные координаты."""
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT * FROM subnets WHERE ppp_state = 'running' ORDER BY id").fetchall()
+            codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
+            antennas = {r["code"]: r["antenna_type"].strip() for r in conn.execute("SELECT code, antenna_type FROM stations WHERE btrim(antenna_type) <> ''")}
+        return [{"id": r["id"], "name": r["name"], "startedAt": r["ppp_started_at"].isoformat(), "stations": [codes[i] for i in r["station_ids"] if i in codes],
+                 "antennas": {codes[i]: antennas[codes[i]] for i in r["station_ids"] if codes.get(i) in antennas}} for r in rows]
+
+    def solver_ppp_results(self, subnet_id: int, started_at: str, results: dict, final: bool = False) -> bool:
+        """Ответ службы расчёта по PPP-AR. final — расчёт закончен; иначе это промежуточное
+        сообщение (например, «ждём продукты»), и расчёт продолжается."""
+        if not isinstance(results, dict) or len(dumps(results)) > 400_000:
+            return False
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT ppp_state, ppp_started_at FROM subnets WHERE id = %s FOR UPDATE", (subnet_id,)).fetchone()
+            if row is None or row["ppp_state"] != "running" or row["ppp_started_at"].isoformat() != started_at:
+                return False
+            conn.execute("UPDATE subnets SET ppp_results = %s, ppp_results_at = now(), ppp_state = %s WHERE id = %s",
+                         (Jsonb(results), "stopped" if final else "running", subnet_id))
+        return True
+
     def solver_tasks(self) -> list[dict]:
         """Что считать службе расчёта: подсети, у которых расчёт идёт."""
         with self.db.connection() as conn:

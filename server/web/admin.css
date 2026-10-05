@@ -273,8 +273,8 @@ body.adm .leaflet-tile-pane { filter: none; }
 body.adm img.leaflet-tile { filter: var(--tiles); }
 
 /* Градусная сетка: тонкая неоновая, неяркая */
-html:has(body.adm) { --grid: rgba(110, 255, 214, 0.2); --grid-text: rgba(150, 255, 226, 0.5); }
-body.adm #graticule { filter: drop-shadow(0 0 2px rgba(93, 242, 176, 0.55)); }
+html:root:has(body.adm), html:root[data-theme]:has(body.adm) { --grid: rgba(110, 255, 214, 0.42); --grid-text: rgba(170, 255, 232, 0.8); }
+body.adm #graticule { z-index: 3; filter: drop-shadow(0 0 3px rgba(93, 242, 176, 0.8)); }
 
 /* Всплывающее окно у значков ленты */
 .adm-tip.glass { position: absolute; z-index: 30; width: 270px; padding: 11px 13px 10px; border-radius: 14px; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
@@ -287,3 +287,11 @@ body.adm #graticule { filter: drop-shadow(0 0 2px rgba(93, 242, 176, 0.55)); }
 .adm-tip-row .adm-chip { display: flex; align-items: center; gap: 7px; width: 100%; height: 27px; opacity: 0.55; }
 .adm-tip-row .adm-chip[aria-current='true'] { opacity: 1; }
 .adm-tip-row .adm-chip i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 7px 1px currentColor; }
+
+/* Четыре шага подсети в окне выбора */
+#sub-fly .adm-steps-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#sub-fly.adm-steps { width: min(470px, calc(100vw - 24px)); }
+
+/* Границы областей */
+.adm-region-main { filter: drop-shadow(0 0 4px #a890ff) drop-shadow(0 0 10px rgba(132, 200, 255, 0.45)); }
+.adm-region-label { color: rgba(170, 215, 255, 0.55); font-size: 10.5px; font-weight: 450; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; white-space: nowrap; pointer-events: none; }

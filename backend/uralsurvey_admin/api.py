@@ -97,6 +97,8 @@ class App:
             r("DELETE", r"/api/admin/subnets/(\d+)", lambda q: (200, store.delete_subnet(q.who, q.id) or {}), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/start", lambda q: (200, store.subnet_calc(q.who, q.id, True)), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/compute", lambda q: (200, store.subnet_calc(q.who, q.id, True, once=True)), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/ppp/start", lambda q: (200, store.subnet_ppp(q.who, q.id, True)), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/ppp/stop", lambda q: (200, store.subnet_ppp(q.who, q.id, False)), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/stop", lambda q: (200, store.subnet_calc(q.who, q.id, False)), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/accept", lambda q: (200, store.subnet_accept(q.who, q.id, q.body.get("stations"))), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/points", lambda q: (200, store.subnet_points(q.who, q.id)), "admin"),
@@ -369,9 +371,11 @@ def make_handler(app: App):
                     store.close_stale_sessions(data["alive"])
                 return self.send_json(200, {"recorded": done})
             if path == "/internal/solver" and self.command == "GET":
-                return self.send_json(200, {"subnets": store.solver_tasks()})
+                return self.send_json(200, {"subnets": store.solver_tasks(), "ppp": store.solver_ppp_tasks()})
             if path == "/internal/solver" and self.command == "POST":
                 data = self.body()
+                if data.get("kind") == "ppp":
+                    return self.send_json(200, {"stored": store.solver_ppp_results(int(data.get("id", 0)), str(data.get("startedAt", "")), data.get("results"), bool(data.get("final")))})
                 return self.send_json(200, {"stored": store.solver_results(int(data.get("id", 0)), str(data.get("startedAt", "")), data.get("results"), bool(data.get("final")))})
             raise Problem("Нет такого адреса.", 404)
 

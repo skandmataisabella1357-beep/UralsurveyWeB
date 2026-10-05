@@ -184,3 +184,26 @@ test('ионосфера по вектору: разброс задержки м
   assert.match(rtklib.config({ base: [1, 2, 3], method: 'ionoest' }), /out-outstat\s+=state/);
   assert.match(rtklib.config({ base: [1, 2, 3], method: 'ionofree' }), /out-outstat\s+=off/);
 });
+
+test('PPP-AR: разбор ответа программы и перевод ITRF2020 в ITRF2014', () => {
+  const ppp = require('../modules/rtknet/ppp');
+  const row = (text, label) => text.padEnd(60) + label;
+  const pos = [row('abmf', 'STATION'), row('2020  1  1  0  0  0.00', 'OBS FIRST EPOCH'), row('2020  1  1 23 59 30.00', 'OBS LAST EPOCH'),
+    row('WUM0MGXRAP_20200010000_01D_05M_ORB.SP3', 'SAT ORBIT'), row('TRM57971.00     NONE', 'SITE ANTENNA TYPE'), row('YES  GPS    40  GAL    24', 'AMB FIXING'), row('', 'END OF HEADER'),
+    '*Name         Mjd               X               Y               Z                       Sx                       Sy                       Sz                      Rxy                      Rxz                      Ryz                     Sig0           Nobs',
+    ' abmf  58849.4998   2919785.79087  -5383744.95942   1774604.85992     0.44535648859620E-08     0.12326947455656E-07     0.19030328992069E-08    -0.61562831362205E-08     0.19597047215955E-08    -0.36630922504825E-08     0.25138906710711E+01          86121'].join('\n');
+  const sol = ppp.parsePos(pos);
+  assert.deepEqual(sol.ecef, [2919785.79087, -5383744.95942, 1774604.85992]);
+  assert.equal(sol.fixed, true);
+  assert.equal(sol.products, 'WUM0MGXRAP');
+  assert.equal(sol.nobs, 86121);
+  assert.equal(sol.last - sol.first, (24 * 3600 - 30) * 1000);
+  // Точность: Sig0·√S — доли миллиметра за сутки
+  assert.ok(Math.abs(sol.sd[0] - 2.5138906710711 * Math.sqrt(0.4453564885962e-8)) < 1e-9);
+  assert.equal(ppp.parsePos('шапка без решения\n'), null);
+  // Перевод систем — миллиметры: на эпоху 2026,76 сдвиг по Z растёт на 0,2 мм в год
+  const moved = ppp.itrf2020to2014([1647585.2585, 3057841.8377, 5331652.6642], 2026.76);
+  const d = moved.map((v, i) => (v - [1647585.2585, 3057841.8377, 5331652.6642][i]) * 1000);
+  assert.ok(Math.abs(d[0] - (-1.4 - 0.692)) < 0.01 && Math.abs(d[1] - (-0.9 - 1.176 - 1.284)) < 0.01 && Math.abs(d[2] - (1.4 + 2.352 - 2.239)) < 0.01, d.join(' '));
+  assert.ok(Math.abs(ppp.decimalYear(Date.UTC(2026, 6, 2, 12)) - 2026.5) < 0.001);
+});

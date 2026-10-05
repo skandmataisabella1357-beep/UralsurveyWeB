@@ -274,7 +274,7 @@
     $('nav').innerHTML = NAV.filter((id) => !VIEWS[id].adminOnly || isAdmin()).map((id) => `<button class="tile" type="button" data-view="${id}" data-tip="view:${id}" aria-current="${id === view}" aria-label="${esc(VIEWS[id].title)}">
       <svg viewBox="0 0 24 24" aria-hidden="true">${ICON[id]}</svg></button>`).join('')
       // Внизу ленты — что показывать на карте: значки-переключатели, без отдельного окна
-      + `<span class="adm-ribbon-gap"></span>${SHOW_TILES.map(([id, title, icon]) => `<button class="tile adm-show" type="button" role="switch" data-show="${id}" data-tip="show:${id}" aria-checked="${id === 'radii' ? SHOW.fix || SHOW.float : SHOW[id]}" aria-label="${title}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></button>`).join('')}`;
+      + `<span class="adm-ribbon-gap"></span>${SHOW_TILES.map(([id, title, icon]) => `<button class="tile adm-show" type="button" role="switch" data-show="${id}" data-tip="show:${id}" aria-checked="${id === 'radii' ? SHOW.fix || SHOW.float || SHOW.over : SHOW[id]}" aria-label="${title}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></button>`).join('')}`;
   }
   // ---------- Каталог сети слева: станции и подсети, как в приложении ----------
 
@@ -346,7 +346,7 @@
     const show = event.target.closest('[data-show]');
     if (show) {
       // Зоны покрытия: значок включает и выключает обе сразу; по отдельности — во всплывающем окне
-      if (show.dataset.show === 'radii') { const on = !(SHOW.fix || SHOW.float); SHOW.fix = on; SHOW.float = on; }
+      if (show.dataset.show === 'radii') { const on = !(SHOW.fix || SHOW.float || SHOW.over); SHOW.fix = on; SHOW.float = on; if (!on) SHOW.over = false; }
       else SHOW[show.dataset.show] = !SHOW[show.dataset.show];
       applyDisplay();
       render();
@@ -464,11 +464,12 @@
   // ---------- Отображение: что показывать на карте ----------
   // Настройки запоминаются в браузере администратора.
 
-  const SHOW = { labels: true, grid: true, fix: false, float: false, contours: true, vectors: true, rovers: true };
+  const SHOW = { labels: true, grid: true, regions: true, fix: false, float: false, over: false, contours: true, vectors: true, rovers: true };
   try { Object.assign(SHOW, JSON.parse(localStorage.getItem('admin-display') || '{}')); } catch (err) { /* настройки по умолчанию */ }
   const SHOW_TILES = [
     ['labels', 'Подписи станций', '<path d="M4 7h16M4 12h10M4 17h7"/>'],
     ['grid', 'Градусная сетка', '<path d="M4 4h16v16H4ZM4 10h16M4 15h16M10 4v16M15 4v16"/>'],
+    ['regions', 'Границы областей', '<path d="M6 5l5-2 4 3 4 1 1 6-3 5-6 3-5-3-2-6Z"/><path d="M11 3l1 6-4 4M12 9l5 3" stroke-dasharray="2 2.500"/>'],
     ['radii', 'Зоны покрытия', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.500"/><circle cx="12" cy="12" r="9.500" stroke-dasharray="2 3"/>'],
     ['contours', 'Контуры подсетей', '<path d="M5 8 13 4l6 6-3 9-9-2Z" stroke-dasharray="3 3"/>'],
     ['vectors', 'Векторы расчёта', '<path d="M5 18 12 6l7 12Z"/><circle cx="5" cy="18" r="1.500"/><circle cx="12" cy="6" r="1.500"/><circle cx="19" cy="18" r="1.500"/>'],
@@ -488,6 +489,7 @@
   const TIP_SHOW = {
     labels: 'Коды станций рядом с точками на карте.',
     grid: 'Градусная сетка поверх карты с подписями широт и долгот.',
+    regions: 'Граница Свердловской области — светящейся линией, соседние области — тонким пунктиром с названиями.',
     contours: 'Границы подсетей пунктиром с их именами. Контур, который сейчас правят или обводят, виден всегда.',
     vectors: 'Векторы последнего расчёта подсети: цвет от красного (метр и хуже) к зелёному (5 мм и лучше).',
     rovers: 'Роверы, которые сейчас подключены и передают своё положение: зелёный — фиксированное решение, жёлтый — плавающее, голубой — дифференциальное, розовый — автономное.',
@@ -508,7 +510,7 @@
     const one = Object.values(radiiNow())[0];
     const chip = (k, text, color) => `<button class="adm-chip" type="button" data-zone="${k}" aria-current="${SHOW[k]}"><i style="background:${color}"></i>${text}</button>`;
     return `<b>Зоны покрытия</b><p>Где ровер получит решение — по расчёту сети, вокруг станций на связи.</p>
-      <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, '#5df2b0')}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, '#ffc48e')}</div>
+      <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, '#5df2b0')}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, '#ffc48e')}${chip('over', 'Перекрытие фикса · две базы и больше', '#84c8ff')}</div>
       <p>${one ? `Ионосфера сейчас: ${num(one.iono_ppm, 1)} мм на км. Вне зон сеть ровера не покрывает.` : 'Расчёта сети ещё не было: запустите расчёт подсети — зоны появятся вокруг её станций.'}</p>`;
   }
   function showTip(el) {
@@ -556,19 +558,71 @@
     return out;
   }
 
+  // Границы областей: Свердловская — светящейся линией, соседи — тонким пунктиром с названиями
+  const regions = { data: null, layer: null, asked: false };
+  function drawRegions() {
+    if (!map) return;
+    if (!SHOW.regions) { if (regions.layer) { regions.layer.remove(); regions.layer = null; } return; }
+    if (!regions.data) {
+      if (!regions.asked) {
+        regions.asked = true;
+        fetch('/regions.json').then((r) => r.json()).then((d) => { regions.data = d.regions; drawRegions(); }).catch(() => { regions.asked = false; });
+      }
+      return;
+    }
+    if (regions.layer) return;
+    const pane = map.getPane('regions') || map.createPane('regions');
+    pane.style.zIndex = 340;
+    pane.style.pointerEvents = 'none';
+    const layers = [];
+    for (const r of regions.data) {
+      for (const ring of r.rings) {
+        if (r.main) {
+          // Широкая бледная подсветка и тонкая яркая линия поверх — неоновый контур
+          layers.push(L.polygon(ring, { pane: 'regions', color: '#a890ff', weight: 5, opacity: 0.16, fill: false, interactive: false }));
+          layers.push(L.polygon(ring, { pane: 'regions', color: '#b9a6ff', weight: 1.4, opacity: 0.95, fillColor: '#a890ff', fillOpacity: 0.035, interactive: false, className: 'adm-region-main' }));
+        } else {
+          layers.push(L.polygon(ring, { pane: 'regions', color: '#84c8ff', weight: 0.9, opacity: 0.5, dashArray: '2 5', fill: false, interactive: false }));
+        }
+      }
+      const big = r.rings.slice().sort((a, b) => b.length - a.length)[0];
+      const c = [big.reduce((sum, p) => sum + p[0], 0) / big.length, big.reduce((sum, p) => sum + p[1], 0) / big.length];
+      if (!r.main) layers.push(L.marker(c, { pane: 'regions', interactive: false, icon: L.divIcon({ className: 'adm-region-label', html: esc(r.name), iconSize: [160, 14], iconAnchor: [80, 7] }) }));
+    }
+    regions.layer = L.layerGroup(layers).addTo(map);
+  }
+
   // Слои поверх подложки: радиусы решений вокруг станций на связи, контуры подсетей, роверы
   let overlay = null;
   let overlayKey = '';
-  const reach = { float: null, fix: null }; // слои зон покрытия: создаются при первой отрисовке
+  const reach = { float: null, fix: null, over: null }; // слои зон покрытия: создаются при первой отрисовке
+
+  // Общая часть зон фиксированного решения двух станций: [[широта, долгота], ...] или null.
+  // Точки каждой окружности, попавшие внутрь другой, обходятся по углу вокруг середины.
+  function overlapOf([, latA, lonA, rA], [, latB, lonB, rB]) {
+    const k = Math.cos((latA + latB) / 2 * Math.PI / 180);
+    const km = (lat1, lon1, lat2, lon2) => Math.hypot((lat1 - lat2) * 111.32, (lon1 - lon2) * 111.32 * k);
+    if (km(latA, lonA, latB, lonB) >= rA + rB) return null;
+    const pts = [];
+    for (const [lat, lon, r, lat2, lon2, r2] of [[latA, lonA, rA, latB, lonB, rB], [latB, lonB, rB, latA, lonA, rA]]) {
+      for (let a = 0; a < 360; a += 4) {
+        const pt = [lat + r / 111.32 * Math.sin(a * Math.PI / 180), lon + r / (111.32 * k) * Math.cos(a * Math.PI / 180)];
+        if (km(pt[0], pt[1], lat2, lon2) <= r2) pts.push(pt);
+      }
+    }
+    if (pts.length < 3) return null;
+    const c = [pts.reduce((sum, q) => sum + q[0], 0) / pts.length, pts.reduce((sum, q) => sum + q[1], 0) / pts.length];
+    return pts.sort((p1, p2) => Math.atan2(p1[0] - c[0], (p1[1] - c[1]) * k) - Math.atan2(p2[0] - c[0], (p2[1] - c[1]) * k));
+  }
   const ROVER = { fixed: ['#86e2c0', 'фиксированное'], float: ['#ffc48e', 'плавающее'], dgps: ['#84c8ff', 'дифференциальное'], single: ['#f09ccc', 'автономное'] };
   function drawOverlay() {
     if (!map) return;
     // Радиусы — расчётные: из оценки ионосферы в последнем расчёте сети. Только у станций на связи.
-    const radii = SHOW.fix || SHOW.float ? radiiNow() : {};
+    const radii = SHOW.fix || SHOW.float || SHOW.over ? radiiNow() : {};
     const stations = (live ? live.stations : []).filter((st) => st.position && st.link.state === 'online' && radii[st.id]).map((st) => [st.id, st.position.lat, st.position.lon, radii[st.id].fix_km, radii[st.id].float_km]);
     const nets = SHOW.contours ? lists.subnets.filter((g) => g.contour.length >= 3 && !(view === 'subnets' && sub.id === g.id) && !sub.drawing).map((g) => [g.name, g.contour]) : [];
     const rovers = SHOW.rovers ? (live ? live.clients : []).filter((c) => c.position).map((c) => [c.login, c.point, c.position.lat, c.position.lon, c.position.kind]) : [];
-    const key = JSON.stringify([stations, nets, rovers, SHOW.fix, SHOW.float]);
+    const key = JSON.stringify([stations, nets, rovers, SHOW.fix, SHOW.float, SHOW.over]);
     if (key === overlayKey) return;
     overlayKey = key;
     if (overlay) overlay.remove();
@@ -577,15 +631,26 @@
     // Зоны, а не круги: круги каждой зоны сливаются в одно ровное пятно без внутренних границ.
     // Жёлтое — плавающее решение, зелёное поверх — фиксированное, без заливки — сеть не покрывает.
     if (!reach.float) {
-      for (const [name, z, color] of [['reachFloat', 350, '#ffc48e'], ['reachFix', 360, '#5df2b0']]) {
+      for (const [name, z, color, opacity] of [['reachFloat', 350, '#ffc48e', 0.13], ['reachFix', 360, '#5df2b0', 0.26], ['reachOver', 370, '#84c8ff', 0.34]]) {
         const pane = map.createPane(name);
         pane.style.zIndex = z;
         pane.style.pointerEvents = 'none';
-        pane.style.opacity = name === 'reachFix' ? 0.26 : 0.13;
+        pane.style.opacity = opacity;
         pane.style.filter = `drop-shadow(0 0 3px ${color})`;
       }
       reach.float = L.svg({ pane: 'reachFloat' });
       reach.fix = L.svg({ pane: 'reachFix' });
+      reach.over = L.svg({ pane: 'reachOver' });
+    }
+    // Перекрытие: где фиксированное решение дают сразу две базы и больше — запас на случай,
+    // если одна из них пропадёт. Рисуются общие части зон каждой пары станций.
+    if (SHOW.over) {
+      for (let i = 0; i < stations.length; i++) {
+        for (let j = i + 1; j < stations.length; j++) {
+          const lens = overlapOf(stations[i], stations[j]);
+          if (lens) layers.push(L.polygon(lens, { stroke: false, fillColor: '#84c8ff', fillOpacity: 1, interactive: false, pane: 'reachOver', renderer: reach.over }));
+        }
+      }
     }
     if (SHOW.float) for (const [, lat, lon, , float] of stations) layers.push(L.circle([lat, lon], { radius: float * 1000, stroke: false, fillColor: '#ffc48e', fillOpacity: 1, interactive: false, pane: 'reachFloat', renderer: reach.float }));
     if (SHOW.fix) for (const [, lat, lon, fix] of stations) layers.push(L.circle([lat, lon], { radius: fix * 1000, stroke: false, fillColor: '#5df2b0', fillOpacity: 1, interactive: false, pane: 'reachFix', renderer: reach.fix }));
@@ -632,6 +697,7 @@
     const selected = view === 'stations' && picked ? (rows.find((r) => r.id === picked) || {}).code : null;
     // Подпись знака — код станции
     window.StationMap.update((live ? live.stations : []).filter((st) => st.position).map((st) => ({ ...st, name: st.id })), selected || null);
+    drawRegions();
     drawContour();
     drawVectors();
     drawOverlay();
@@ -742,10 +808,11 @@
   // ---------- Подсети ----------
   // Шаги выбираются плитками в окне раздела: контур, расчёт, подключение.
 
-  const STEPS = { contour: 'Контур', calc: 'Расчёт', link: 'Подключение' };
+  const STEPS = { contour: 'Контур', calc: 'Расчёт', ppp: 'PPP-AR', link: 'Подключение' };
   const STEP_ICON = {
     contour: '<path d="M5 8 13 4l6 6-3 9-9-2Z"/><circle cx="5" cy="8" r="1.3"/><circle cx="13" cy="4" r="1.3"/><circle cx="19" cy="10" r="1.3"/><circle cx="16" cy="19" r="1.3"/><circle cx="7" cy="17" r="1.3"/>',
     calc: '<circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="1.3"/>',
+    ppp: '<circle cx="12" cy="12" r="2.200"/><path d="M12 2v5M12 17v5M4.500 7l4 2.500M15.500 14.500l4 2.500M19.500 7l-4 2.500M8.500 14.500l-4 2.500"/>',
     link: ICON.mountpoints,
   };
   const QUALITY = { reference: ['опорная', ''], fix: ['фиксированное', 'is-online'], float: ['плавающее', 'is-wait'], none: ['нет решения', 'is-fail'] };
@@ -801,11 +868,14 @@
       const none = v.quality === 'none';
       // Цвет — по худшему из двух: оценка точности вектора и его невязка в уравненной сети
       const q = v.sd === null || v.sd === undefined ? null : Math.max(v.sd, v.resid || 0);
-      const line = L.polyline([a, b], { color: qualityColor(q), weight: none ? 1.5 : 3.5, opacity: 0.95, dashArray: none ? '4 6' : null });
+      // Тонкая линия с мягким свечением своего цвета; вектор без решения — бледный пунктир
+      const line = L.polyline([a, b], { color: qualityColor(q), weight: none ? 1 : 1.3, opacity: none ? 0.5 : 0.9, dashArray: none ? '3 6' : null, lineCap: 'round' });
+      line.glow = none ? '' : `drop-shadow(0 0 2.5px ${qualityColor(q)})`;
       line.bindTooltip(`${esc(v.a)} → ${esc(v.b)}: ${num(v.length_km, 1)} км, ${(QUALITY[v.quality] || ['—'])[0]}${v.sd == null ? '' : `, точность ${mm(v.sd)} мм`}${v.resid == null ? '' : `, невязка ${mm(v.resid)} мм`}${v.closure == null ? '' : `, незамыкание треугольника до ${mm(v.closure)} мм`}${v.minutes ? `, ${v.minutes} мин наблюдений` : ''}`, { sticky: true });
       lines.push(line);
     }
     sub.vectors = L.layerGroup(lines).addTo(map);
+    for (const line of lines) if (line._path && line.glow) line._path.style.filter = line.glow;
     $('map-legend-name').textContent = `Векторы ${row.name}`;
   }
 
@@ -882,6 +952,21 @@
           <td class="fig">${r.x === undefined ? '—' : num(r.x, 4)}</td><td class="fig">${r.y === undefined ? '—' : num(r.y, 4)}</td><td class="fig">${r.z === undefined ? '—' : num(r.z, 4)}</td>
           <td class="fig">${r.shift === undefined || r.shift === null ? '—' : num(r.shift, 3)}</td><td>${a ? `${when(a.at)}` : '—'}</td></tr>`;
       }).join('') || '<tr><td colspan="12">В подсети нет станций</td></tr>';
+    } else if (sub.step === 'ppp') {
+      const res = row.ppp_results || {};
+      const st = res.stations || {};
+      const net = (row.results && row.results.stations) || {};
+      $('sub-status').textContent = row.ppp_state === 'idle' ? 'PPP-AR ещё не запускался.'
+        : (row.ppp_state === 'running' ? `PPP-AR запущен ${when(row.ppp_started_at)}. ${res.note || 'Идёт расчёт…'}` : `PPP-AR выполнен ${when(row.ppp_results_at)}${res.epoch ? `, эпоха ${num(res.epoch, 3)}` : ''}. ${res.note || ''}`);
+      body.innerHTML = row.stations.map((code) => {
+        const r = st[code] || {};
+        const n = net[code];
+        const diff = r.x14 !== undefined && n && n.x !== undefined ? Math.hypot(r.x14 - n.x, r.y14 - n.y, r.z14 - n.z) : null;
+        return `<tr><td><span class="fig">${esc(code)}</span></td><td>${r.x === undefined ? `<span class="is-wait">${esc(r.note || 'ждём')}</span>` : (r.fixed ? '<span class="is-online">фиксированное</span>' : '<span class="is-wait">плавающее</span>')}</td>
+          <td class="fig">${r.hours === undefined ? '—' : num(r.hours, 1)}</td><td class="fig">${r.sd ? `<i class="adm-q" style="background:${qualityColor(Math.hypot(...r.sd))}"></i>${mm(Math.hypot(...r.sd))}` : '—'}</td>
+          <td class="fig">${r.x14 === undefined ? '—' : num(r.x14, 4)}</td><td class="fig">${r.y14 === undefined ? '—' : num(r.y14, 4)}</td><td class="fig">${r.z14 === undefined ? '—' : num(r.z14, 4)}</td>
+          <td class="fig">${r.shift === undefined || r.shift === null ? '—' : num(r.shift, 3)}</td><td class="fig">${diff === null ? '—' : num(diff, 3)}</td><td>${esc(r.products || '—')}</td></tr>`;
+      }).join('') || '<tr><td colspan="10">В подсети нет станций</td></tr>';
     } else if (sub.step === 'link') {
       body.innerHTML = row.stations.map((code) => {
         const a = acc[code];
@@ -947,12 +1032,20 @@
         <p class="hint" id="sub-status"></p>
         <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Векторов</th><th>Решение</th><th>Минут</th><th>Точность, мм</th><th>Невязка, мм</th><th>Разброс, мм</th><th>X</th><th>Y</th><th>Z</th><th>С потоком, м</th><th>Принято</th></tr></thead><tbody id="sub-rows"></tbody></table></div>
         <p class="hint">Станции связаны взаимными треугольниками, сеть уравнена от опорной. «Точность» — оценка после уравнивания, «Невязка» — насколько худший вектор станции разошёлся с уравненной сетью, «Разброс» — насколько ответ менялся за последние пересчёты. «С потоком» — расхождение с координатами, которые станция сейчас передаёт сама. Чем дольше сервер копит наблюдения (до 6 часов), тем точнее ответ.</p>`;
+    } else if (sub.step === 'ppp') {
+      const going = row.ppp_state === 'running';
+      body = `<p class="hint">PPP-AR считает каждую станцию саму по себе, без опорной: по точным орбитам, часам и фазовым поправкам спутников, с фиксацией неоднозначностей. Ответ — абсолютные координаты в ITRF2020 на эпоху измерений; в таблице они пересчитаны в ITRF2014. Продукты спутников выходят с отставанием, поэтому считаются наблюдения старше трёх часов; если их пока мало, расчёт дождётся сам.</p>
+        ${admin ? `<div class="adm-actions">${going ? '<button class="btn btn-quiet btn-small btn-danger" type="button" data-do="ppp-stop">Остановить PPP-AR</button>' : '<button class="btn btn-primary btn-small" type="button" data-do="ppp-start">Запустить PPP-AR</button>'}<button class="btn btn-quiet btn-small" type="button" data-do="ppp-run">Ход расчёта</button></div>` : ''}
+        <p class="hint" id="sub-status"></p>
+        <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Решение</th><th>Часов</th><th>Точность, мм</th><th>X (ITRF2014)</th><th>Y</th><th>Z</th><th>С потоком, м</th><th>С сетевым расчётом, м</th><th>Продукты</th></tr></thead><tbody id="sub-rows"></tbody></table></div>
+        <p class="hint">«С потоком» — расхождение с координатами, которые станция передаёт сама. «С сетевым расчётом» — с результатом шага «Расчёт» (он привязан к вашей опорной станции, поэтому общий сдвиг здесь — это сдвиг её координат).</p>`;
     } else {
       body = `<p class="hint">У подсети свои точки подключения: поток станции тот же, а координаты базы в нём — принятые в подсети. Обычные точки станции при этом не меняются. Точки подсети доступны только по тарифу, где они названы: заведите тариф с этими точками и выдайте клиенту подписку — он получит подсеть целиком.</p>
         ${admin ? '<div class="adm-actions"><button class="btn btn-primary btn-small" type="button" data-do="points">Создать точки подключения</button></div>' : ''}
         <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>X</th><th>Y</th><th>Z</th><th>Решение</th><th>Точка подключения</th><th>Состояние</th></tr></thead><tbody id="sub-rows"></tbody></table></div>`;
     }
     sub.seenState = row ? row.calc_state : null;
+    sub.seenPpp = row ? row.ppp_state : null;
     $('sub-dialog').classList.toggle('adm-wide', sub.step !== 'contour');
     $('sub-head').textContent = `${row ? row.name : 'Новая подсеть'} · ${STEPS[sub.step]}`;
     $('sub-body').innerHTML = body;
@@ -1020,6 +1113,13 @@
     if (act === 'steps') { $('sub-dialog').close(); showSteps(); return; }
     if (act === 'draw') { sub.before = d.contour.map((pt) => [...pt]); sub.beforeIds = new Set(d.ids); sub.drawing = true; $('sub-dialog').close(); return; }
     if (act === 'clear') { d.contour = []; render(); return; }
+    if (act === 'ppp-run') { openRun(`ppp-${row.id}`, `${row.name} · PPP-AR`); run.since = Date.parse(row.ppp_started_at) || 0; renderRun(); return; }
+    if (act === 'ppp-start' || act === 'ppp-stop') {
+      const got = await subCall(`/api/admin/subnets/${row.id}/ppp/${act === 'ppp-start' ? 'start' : 'stop'}`, 'POST', {}, act === 'ppp-stop' ? 'PPP-AR остановлен.' : '');
+      render();
+      if (got && act === 'ppp-start') openRun(`ppp-${row.id}`, `${row.name} · PPP-AR`);
+      return;
+    }
     if (act === 'run') { openRun(row.id, row.name); run.since = Date.parse(row.calc_started_at) || 0; renderRun(); return; }
     if (act === 'stream') {
       const s = lists.stations.find((x) => x.id === Number($('sub-ref').value));
@@ -1332,7 +1432,7 @@
       renderMap();
       // Расчёт закончился или начался, пока окно открыто, — кнопки в нём должны смениться
       const shown = subRow();
-      if ($('sub-dialog').open && sub.step === 'calc' && shown && sub.seenState !== shown.calc_state) renderStep();
+      if ($('sub-dialog').open && shown && ((sub.step === 'calc' && sub.seenState !== shown.calc_state) || (sub.step === 'ppp' && sub.seenPpp !== shown.ppp_state))) renderStep();
       subLive();
       return;
     }

@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -404,7 +404,19 @@ class AdminTest(unittest.TestCase):
         status, res, _ = a.call("POST", base + "/start", {})
         self.assertEqual(status, 400, res)
         self.assertIn("опорную", res["error"])
-        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1], {"subnets": []})
+        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1], {"subnets": [], "ppp": []})
+        # PPP-AR: задание службе расчёта; промежуточный ответ расчёт не закрывает, итоговый — закрывает
+        status, got, _ = a.call("POST", base + "/ppp/start", {})
+        self.assertEqual((status, got["ppp_state"]), (200, "running"))
+        job = a.call("GET", "/internal/solver", headers=key)[1]["ppp"][0]
+        self.assertEqual((job["name"], job["stations"]), ("EKB", ["SUB1", "SUB2"]))
+        post = lambda results, final: a.call("POST", "/internal/solver", {"kind": "ppp", "id": sub["id"], "startedAt": job["startedAt"], "results": results, "final": final}, key)[1]
+        self.assertEqual(post({"note": "ждём продукты"}, False), {"stored": True})
+        self.assertEqual(len(a.call("GET", "/internal/solver", headers=key)[1]["ppp"]), 1)
+        self.assertEqual(post({"stations": {"SUB1": {"x": XYZ["x"], "y": XYZ["y"], "z": XYZ["z"], "fixed": True}}}, True), {"stored": True})
+        got = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
+        self.assertEqual((got["ppp_state"], got["ppp_results"]["stations"]["SUB1"]["fixed"]), ("stopped", True))
+        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1]["ppp"], [])
         status, sub, _ = a.call("PATCH", base, {"reference_station_id": ids[0], "ref_x": XYZ["x"], "ref_y": XYZ["y"], "ref_z": XYZ["z"]})
         self.assertEqual((status, sub["reference"]), (200, "SUB1"))
         status, sub, _ = a.call("POST", base + "/start", {})
@@ -439,7 +451,7 @@ class AdminTest(unittest.TestCase):
         self.assertIsNone(points["SUB1"]["position"])
         status, sub, _ = a.call("POST", base + "/stop", {})
         self.assertEqual((status, sub["calc_state"]), (200, "stopped"))
-        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1], {"subnets": []})
+        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1]["subnets"], [])
         # «Вычислить текущие координаты»: разовое задание; после ответа с отметкой final расчёт выполнен
         status, sub, _ = a.call("POST", base + "/compute", {})
         self.assertEqual((status, sub["calc_state"], sub["calc_once"]), (200, "running", True))
@@ -448,7 +460,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": task["startedAt"], "results": results, "final": True}, key)[1], {"stored": True})
         sub = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
         self.assertEqual((sub["calc_state"], sub["results"]["cycles"]), ("stopped", 3))
-        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1], {"subnets": []})
+        self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1]["subnets"], [])
         actions = [r["action"] for r in a.call("GET", "/api/admin/audit?entity=subnets")[1]["items"]]
         for action in ("создана", "расчёт начат", "вычисление текущих координат", "приняты координаты", "созданы точки подсети", "расчёт остановлен"):
             self.assertIn(action, actions)
