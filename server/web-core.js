@@ -33,7 +33,15 @@ if (HOST !== '127.0.0.1') {
 
 // Настройки приёма и раздачи: станций здесь нет, они приходят из базы
 const configFile = path.join(os.tmpdir(), `uralsurvey-${process.pid}.json`);
-fs.writeFileSync(configFile, JSON.stringify({ bind: '127.0.0.1', caster: { port: 2101, enabled: true }, stations: [] }));
+// Что открыто наружу, решает владелец сервера в файле server.json рядом с данными. Без файла
+// раздача слушает только эту машину. ntripBind — адрес, на котором порт 2101 ждёт роверы
+// (0.0.0.0 — все адреса сервера); ntripHost — имя сервера в таблице источников.
+let site = {};
+try { site = JSON.parse(fs.readFileSync(path.join(DATA, 'server.json'), 'utf8')); } catch (err) { /* файла нет — всё закрыто */ }
+const caster = { port: 2101, enabled: true };
+if (typeof site.ntripBind === 'string' && site.ntripBind) caster.publicBind = site.ntripBind;
+if (typeof site.ntripHost === 'string' && site.ntripHost) caster.publicHost = site.ntripHost;
+fs.writeFileSync(configFile, JSON.stringify({ bind: '127.0.0.1', caster, stations: [] }));
 process.on('exit', () => { try { fs.unlinkSync(configFile); } catch (err) { /* уже убран */ } });
 
 const env = {
@@ -66,6 +74,7 @@ function launch(name, start, attempt = 0) {
 }
 
 console.log(`Сервер Uralsurvey: панель на http://${HOST}:${PORT}/admin.html, данные в ${DATA}`);
+console.log(caster.publicBind ? `Раздача роверам открыта: ${caster.publicBind}:2101` : 'Раздача роверам закрыта: порт 2101 слушает только эту машину (см. server.json)');
 // Управление стартует первым: оно создаёт ключи и применяет схему базы
 launch('управление', () => spawn(PYTHON, ['-m', 'uralsurvey_admin', 'serve'], { cwd: path.join(ROOT, 'backend'), env, stdio: 'inherit' }));
 setTimeout(() => {
