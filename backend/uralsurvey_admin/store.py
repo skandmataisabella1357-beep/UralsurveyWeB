@@ -113,7 +113,7 @@ def _enum(*allowed: str):
 
 
 def _addresses(value, name):
-    """Список разрешённых адресов станции: адреса и подсети IPv4."""
+    """Список разрешённых адресов станции: адреса и расчётного модуля IPv4."""
     if value in (None, ""):
         return []
     if isinstance(value, str):
@@ -125,7 +125,7 @@ def _addresses(value, name):
         try:
             net = ipaddress.ip_network(str(item).strip(), strict=False)
         except ValueError:
-            raise Problem(f"{name}: «{item}» — не адрес IPv4 и не подсеть вида 10.0.0.0/8.") from None
+            raise Problem(f"{name}: «{item}» — не адрес IPv4 и не расчётный модуль вида 10.0.0.0/8.") from None
         if net.version != 4:
             raise Problem(f"{name}: поддерживаются только адреса IPv4.")
         out.append(str(net.network_address) if net.prefixlen == 32 else str(net))
@@ -221,7 +221,7 @@ REQUIRED = {
 
 TITLES = {
     "layers": "слой",
-    "subnets": "подсеть", "networks": "сеть раздачи",
+    "subnets": "расчётный модуль", "networks": "сеть раздачи",
     "stations": "станция", "mountpoints": "точка подключения", "clients": "клиент", "tariffs": "тариф",
     "subscriptions": "подписка", "ntrip_logins": "логин", "admins": "администратор",
 }
@@ -1019,6 +1019,8 @@ class Store:
                 # Обычная точка: поток как пришёл, если станции не велено раздавать координаты из каталога
                 return catalog.get(p["station_code"])
             got = released.get(p["network_id"], {}).get(p["station_code"])
+            if got and got.get("pass"):
+                return catalog.get(p["station_code"])
             return [float(got["x"]), float(got["y"]), float(got["z"])] if got else None
 
         def station_source(s: dict) -> dict:
@@ -1049,7 +1051,7 @@ class Store:
                           "antennaType": s["antenna_type"], "receiverType": s["receiver_type"]} for s in stations],
             "mountpoints": [{"name": p["name"], "station": p["station_code"], "stationId": p["rtcm_station_id"], "listed": p["listed"],
                              "enabled": p["enabled"], "access": staff_logins if p["access"] == "staff" else None,
-                             "position": own_position(p), "transform": transform(p), "filter": shaping(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or own_position(p)],
+                             "position": own_position(p), "transform": transform(p), "filter": shaping(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or p["station_code"] in released.get(p["network_id"], {})],
             "users": users,
             "auto": auto,
             "rules": {"stationLostMs": lost * 1000},
@@ -1260,7 +1262,7 @@ class Store:
             self._audit(conn, who, "задана область работы", "layers", layer_id, {"name": row["name"], "logins": sorted(r["login"] for r in done)})
         return next(x for x in self.list_layers() if x["id"] == layer_id)
 
-    # ---------- Подсети ----------
+    # ---------- Расчётного модуля ----------
 
     @staticmethod
     def _subnet_fields(data: dict, partial: bool) -> dict:
@@ -1270,7 +1272,7 @@ class Store:
         if "name" in data or not partial:
             name = str(data.get("name") or "").strip()
             if not re.fullmatch(r"[A-Za-z0-9]{1,12}", name):
-                raise Problem("Имя подсети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
+                raise Problem("Имя расчётного модуля: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
             out["name"] = name.upper()
         for key, limit in (("title", 80), ("note", 500)):
             if key in data:
@@ -1286,7 +1288,7 @@ class Store:
         if "station_ids" in data:
             ids = data["station_ids"]
             if not isinstance(ids, list) or len(ids) > 500 or any(not isinstance(i, int) or isinstance(i, bool) or i < 1 for i in ids):
-                raise Problem("Станции подсети — список их номеров.")
+                raise Problem("Станции расчётного модуля — список их номеров.")
             out["station_ids"] = sorted(set(ids))
         if "reference_station_id" in data:
             ref = data["reference_station_id"]
@@ -1319,7 +1321,7 @@ class Store:
     def _subnet(self, conn, subnet_id: int, lock: bool = False) -> dict:
         row = conn.execute("SELECT * FROM subnets WHERE id = %s" + (" FOR UPDATE" if lock else ""), (subnet_id,)).fetchone()
         if row is None:
-            raise Problem(f"Нет такой подсети: №{subnet_id}.", 404)
+            raise Problem(f"Нет такого расчётного модуля: №{subnet_id}.", 404)
         return row
 
     def _subnet_out(self, conn, row: dict) -> dict:
@@ -1334,7 +1336,7 @@ class Store:
             before = self._subnet(conn, row_id, lock=True) if row_id is not None else None
             # Состав и опора на ходу расчёта не меняются: результат относился бы к другой сети
             if before and before["calc_state"] == "running" and any(k in fields for k in ("station_ids", "reference_station_id", "ref_x", "ref_y", "ref_z")):
-                raise Problem("Идёт расчёт. Чтобы изменить состав подсети или опорную станцию, сначала остановите его.", 409)
+                raise Problem("Идёт расчёт. Чтобы изменить состав расчётного модуля или опорную станцию, сначала остановите его.", 409)
             if "station_ids" in fields:
                 known = {r["id"] for r in conn.execute("SELECT id FROM stations WHERE id = ANY(%s)", (fields["station_ids"],))}
                 if known != set(fields["station_ids"]):
@@ -1342,7 +1344,7 @@ class Store:
             merged = {**(before or {}), **fields}
             ref = merged.get("reference_station_id")
             if ref is not None and ref not in (merged.get("station_ids") or []):
-                raise Problem("Опорная станция должна входить в подсеть.")
+                raise Problem("Опорная станция должна входить в расчётный модуль.")
             self._check_position({k[-1]: fields[k] for k in ("ref_x", "ref_y", "ref_z") if k in fields},
                                  {k[-1]: before[k] for k in ("ref_x", "ref_y", "ref_z")} if before else None)
             fields["updated_at"] = dt.datetime.now(dt.timezone.utc)
@@ -1357,13 +1359,13 @@ class Store:
             self._audit(conn, who, "удалена", "subnets", row_id, {"name": row["name"]})
 
     def subnet_calc(self, who: dict, row_id: int, run: bool, once: bool = False) -> dict:
-        """Начать или остановить расчёт подсети. once — разовый расчёт («вычислить текущие
+        """Начать или остановить расчёт расчётного модуля. once — разовый расчёт («вычислить текущие
         координаты»): служба расчёта отвечает один раз, и расчёт считается выполненным."""
         with self.db.transaction() as conn:
             row = self._subnet(conn, row_id, lock=True)
             if run:
                 if len(row["station_ids"]) < 2:
-                    raise Problem("В подсети должно быть не меньше двух станций.")
+                    raise Problem("В расчётном модуле должно быть не меньше двух станций.")
                 if row["reference_station_id"] is None or row["ref_x"] is None:
                     raise Problem("Выберите опорную станцию и введите её координаты X, Y, Z.")
                 fields = {"calc_state": "running", "calc_once": once, "calc_started_at": dt.datetime.now(dt.timezone.utc), "results": Jsonb({}), "results_at": None}
@@ -1397,7 +1399,7 @@ class Store:
                         {"name": row["name"], "stations": sorted(done), "quality": {c: accepted[c].get("quality") for c in sorted(done)}})
             return self._subnet_out(conn, row)
 
-    # ---------- Сети раздачи: выпуск согласованных координат подсети ----------
+    # ---------- Сети раздачи: выпуск согласованных координат расчётного модуля ----------
 
     @staticmethod
     def _recipe(data) -> dict:
@@ -1407,10 +1409,12 @@ class Store:
             data = {"local": {"coords": "net1"}, "itrf": {"coords": "itrf2014"}, "itrf_msk": {"coords": "itrf2014", "transform": "msk66"}}.get(data)
         if not isinstance(data, dict):
             raise Problem("Состав сети: набор блоков (координаты, пересчёт, станции, спутники, частота).")
-        coords = str(data.get("coords") or "itrf2014")
-        if coords not in NET_COORDS:
+        # Источник: расчётный модуль с расчётом либо основная сеть — тогда координаты остаются как в её потоках
+        source = "main" if data.get("source") == "main" else "subnet"
+        coords = "stream" if source == "main" else str(data.get("coords") or "itrf2014")
+        if source == "subnet" and coords not in NET_COORDS:
             raise Problem("Координаты базы: ITRF2014, ITRF2020, как основная сеть или ГСК-2011.")
-        transform = str(data.get("transform") or "none")
+        transform = "none" if source == "main" else str(data.get("transform") or "none")
         if transform not in NET_TRANSFORMS:
             raise Problem("Пересчёт в потоке: не передавать, МСК-66, СК-42 или ГСК-2011.")
         if coords in ("net1", "gsk2011") and transform != "none":
@@ -1431,24 +1435,34 @@ class Store:
             rate = 0
         if rate not in NET_RATES:
             raise Problem("Частота поправок: раз в 1, 2, 5 или 10 секунд.")
-        return {"coords": coords, "transform": transform, "stations": stations, "systems": [c for c in NET_SYSTEMS if c in systems], "rate": rate,
+        return {"source": source, "coords": coords, "transform": transform, "stations": stations, "systems": [c for c in NET_SYSTEMS if c in systems], "rate": rate,
                 "near": bool(data.get("near", True))}
 
     @staticmethod
     def _recipe_kind(recipe: dict) -> str:
         """Короткая метка для цвета в панели."""
-        return "local" if recipe["coords"] == "net1" else ("itrf_msk" if recipe["transform"] != "none" else "itrf")
+        return "local" if recipe["coords"] in ("net1", "stream") else ("itrf_msk" if recipe["transform"] != "none" else "itrf")
 
-    def _network_build(self, conn, subnet: dict, recipe: dict) -> dict:
+    def _network_build(self, conn, subnet: dict | None, recipe: dict) -> dict:
         """Что вошло бы в выпуск сейчас по рецепту: координаты станций в выбранной системе,
-        параметры пересчёта для потока, отбор спутников и эпох."""
+        параметры пересчёта для потока, отбор спутников и эпох. Сеть из основной сети (без
+        расчётного модуля) координат не меняет: её точки отдают то же, что обычные точки станций."""
+        if recipe["source"] == "main":
+            chosen = set(recipe["stations"]) if recipe["stations"] else None
+            stations = {r["code"]: {"pass": True} for r in conn.execute("SELECT code FROM stations WHERE enabled ORDER BY code") if chosen is None or r["code"] in chosen}
+            if not stations:
+                raise Problem("Станций для этой сети нет: проверьте блок «Станции».")
+            return {"kind": "local", "recipe": recipe, "subnet": None, "stations": stations, "epoch": None,
+                    "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"]}
+        if subnet is None:
+            raise Problem("Укажите расчётный модуль, из которого выпускается сеть, либо выберите источником основную сеть.")
         accepted = subnet["accepted"] or {}
         link = (subnet["link"] or {}).get("params")
         if not accepted:
-            raise Problem("В подсети нет принятых координат: выпускать нечего. Примите координаты на шаге «PPP-AR» или «Расчёт».")
+            raise Problem("В расчётном модуле нет принятых координат: выпускать нечего. Примите координаты на шаге «PPP-AR» или «Расчёт».")
         needs_link = recipe["coords"] == "net1" or recipe["transform"] in ("msk66", "sk42")
         if needs_link and not link:
-            raise Problem("Сначала рассчитайте привязку подсети к основной сети: без неё координаты «как основная сеть» и пересчёт в МСК-66 или СК-42 не собрать.")
+            raise Problem("Сначала рассчитайте привязку расчётного модуля к основной сети: без неё координаты «как основная сеть» и пересчёт в МСК-66 или СК-42 не собрать.")
         known = {r["code"] for r in conn.execute("SELECT code FROM stations WHERE id = ANY(%s)", (subnet["station_ids"],))}
         chosen = set(recipe["stations"]) if recipe["stations"] else None
         epochs = [float(a["epoch"]) for a in accepted.values() if isinstance(a, dict) and a.get("epoch")]
@@ -1491,7 +1505,8 @@ class Store:
         """Чем новый выпуск отличается от действующего: сдвиг каждой станции, новые и ушедшие,
         и изменился ли состав блоков или параметры пересчёта."""
         was = (old or {}).get("stations") or {}
-        shifts = {c: round(math.dist([s["x"], s["y"], s["z"]], [was[c]["x"], was[c]["y"], was[c]["z"]]), 4) for c, s in new["stations"].items() if c in was}
+        shifts = {c: round(math.dist([s["x"], s["y"], s["z"]], [was[c]["x"], was[c]["y"], was[c]["z"]]), 4) for c, s in new["stations"].items()
+                  if c in was and "x" in s and "x" in was[c]}
         worst = max(shifts, key=shifts.get) if shifts else None
         same = lambda key: (old or {}).get(key) == new.get(key)
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
@@ -1541,11 +1556,11 @@ class Store:
         with self.db.connection() as conn:
             net = self._network(conn, int(data["network_id"])) if data.get("network_id") else None
             subnet_id = net["subnet_id"] if net else data.get("subnet_id")
-            if not isinstance(subnet_id, int):
-                raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего." if net else "Укажите подсеть.")
             # Рецепт — из запроса; иначе действующий рецепт сети
             recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else (data.get("kind") or (net["recipe"] or net["kind"] if net else None)))
-            new = self._network_build(conn, self._subnet(conn, subnet_id), recipe)
+            if recipe["source"] == "subnet" and not isinstance(subnet_id, int):
+                raise Problem("Расчётный модуль, из которого выпускалась эта сеть, удалён: новую версию выпустить не из чего." if net else "Укажите расчётный модуль.")
+            new = self._network_build(conn, self._subnet(conn, subnet_id) if recipe["source"] == "subnet" else None, recipe)
             # plan — что будет передаваться: по нему панель показывает параметры до выпуска
             plan = {k: new.get(k) for k in ("kind", "recipe", "params", "mode", "used", "epoch", "transform", "filter", "near")}
             plan["codes"] = sorted(new["stations"])
@@ -1561,44 +1576,47 @@ class Store:
         stations = {r["code"]: r["id"] for r in conn.execute("SELECT id, code FROM stations WHERE code = ANY(%s)", (list(release["stations"]),))}
         have = {r["station_id"] for r in conn.execute("SELECT station_id FROM mountpoints WHERE network_id = %s", (net["id"],))}
         conn.execute("DELETE FROM mountpoints WHERE network_id = %s AND station_id <> ALL(%s)", (net["id"], list(stations.values())))
+        # У обычной точки станции может быть задан свой номер станции в потоке: точка сети его повторяет
+        ids = {r["station_id"]: r["rtcm_station_id"] for r in conn.execute(
+            "SELECT DISTINCT ON (station_id) station_id, rtcm_station_id FROM mountpoints WHERE network_id IS NULL AND rtcm_station_id IS NOT NULL ORDER BY station_id, name")}
         for code, station_id in sorted(stations.items()):
             if station_id not in have:
                 self._insert(conn, "mountpoints", {"name": f"{net['name']}_{code}"[:32], "station_id": station_id, "network_id": net["id"], "access": "tariff",
-                                                   "note": f"сеть {net['name']}: согласованные координаты базы"})
+                                                   "rtcm_station_id": ids.get(station_id), "note": f"сеть раздачи {net['name']}"})
         self._audit(conn, who, action, "networks", net["id"], {"name": net["name"], "version": version, "stations": len(release["stations"]),
                                                                "max_shift": diff["max_shift"], "added": diff["added"], "gone": diff["gone"]})
         return self._network_view(conn, row)
 
     def network_create(self, who: dict, data: dict) -> dict:
-        """Выпустить новую сеть раздачи из подсети: имя, вид и первый снимок координат."""
+        """Выпустить новую сеть раздачи из расчётного модуля: имя, вид и первый снимок координат."""
         if not isinstance(data, dict):
             raise Problem("Запрос должен быть набором полей.")
         name = str(data.get("name") or "").strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
             raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
         recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else data.get("kind"))
-        if not isinstance(data.get("subnet_id"), int):
-            raise Problem("Укажите подсеть, из которой выпускается сеть.")
+        if recipe["source"] == "subnet" and not isinstance(data.get("subnet_id"), int):
+            raise Problem("Укажите расчётный модуль, из которого выпускается сеть, либо выберите источником основную сеть.")
         with self.db.transaction() as conn:
-            subnet = self._subnet(conn, data["subnet_id"], lock=True)
+            subnet = self._subnet(conn, data["subnet_id"], lock=True) if recipe["source"] == "subnet" else None
             release = self._network_build(conn, subnet, recipe)
-            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"],
+            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"] if subnet else None,
                                                   "kind": self._recipe_kind(recipe), "recipe": Jsonb(recipe),
                                                   "port": self._network_port(conn, data.get("port"))})
             return self._network_store(conn, who, net, release, "сеть выпущена")
 
     def network_release(self, who: dict, network_id: int, recipe=None) -> dict:
-        """Новая версия сети: свежий снимок координат из её подсети, с прежним составом блоков
+        """Новая версия сети: свежий снимок координат из её расчётного модуля, с прежним составом блоков
         или с изменённым. До выпуска сеть раздаёт прежнее."""
         with self.db.transaction() as conn:
             net = self._network(conn, network_id, lock=True)
-            if net["subnet_id"] is None:
-                raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего.")
             recipe = self._recipe(recipe if recipe is not None else (net["recipe"] or net["kind"]))
-            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True), recipe)
+            if recipe["source"] == "subnet" and net["subnet_id"] is None:
+                raise Problem("Расчётный модуль, из которого выпускалась эта сеть, удалён: новую версию выпустить не из чего.")
+            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True) if recipe["source"] == "subnet" else None, recipe)
             diff = self._network_diff(release, net["release"])
             if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()) and not diff["params_changed"]:
-                raise Problem("Изменений нет: координаты в подсети и состав сети те же, что в действующей версии.")
+                raise Problem("Изменений нет: координаты в расчётном модуле и состав сети те же, что в действующей версии.")
             net = self._update(conn, "networks", network_id, {"recipe": Jsonb(recipe), "kind": self._recipe_kind(recipe)})
             return self._network_store(conn, who, net, release, "выпущена новая версия сети")
 
@@ -1636,7 +1654,7 @@ class Store:
         with self.db.transaction() as conn:
             row = self._subnet(conn, row_id, lock=True)
             if on and not row["station_ids"]:
-                raise Problem("В подсети нет станций.")
+                raise Problem("В расчётном модуле нет станций.")
             row = self._update(conn, "subnets", row_id, {"ppp_daily": bool(on)})
             self._audit(conn, who, "суточный PPP-AR включён" if on else "суточный PPP-AR выключен", "subnets", row_id, {"name": row["name"]})
             return self._subnet_out(conn, row)
@@ -1650,7 +1668,7 @@ class Store:
             return self._subnet_out(conn, row)
 
     def subnet_accept_ppp(self, who: dict, row_id: int, codes: list | None = None) -> dict:
-        """Принять координаты подсети из PPP-AR (ITRF2014): среднее по суточным расчётам,
+        """Принять координаты расчётного модуля из PPP-AR (ITRF2014): среднее по суточным расчётам,
         а пока их нет — последний разовый расчёт. Принятые координаты сами не меняются."""
         with self.db.transaction() as conn:
             row = self._subnet(conn, row_id, lock=True)
@@ -1679,7 +1697,7 @@ class Store:
             return self._subnet_out(conn, row)
 
     def subnet_link(self, who: dict, row_id: int, codes: list | None = None, mode: str = "shift") -> dict:
-        """Привязка подсети к основной сети: параметры перехода от принятых координат подсети
+        """Привязка расчётного модуля к основной сети: параметры перехода от принятых координат расчётного модуля
         к координатам станций из каталога. mode: shift — только общий сдвиг (повороты и масштаб
         нулевые), full — все семь параметров. codes — по каким станциям считать; без списка
         берётся самая большая группа станций, у которых сдвиг между сетями совпадает в
@@ -1695,7 +1713,7 @@ class Store:
             pairs = {c: ([float(a["x"]), float(a["y"]), float(a["z"])], catalog[c]) for c, a in accepted.items() if c in catalog}
             missing = sorted(c for c in accepted if c not in catalog)
             if len(pairs) < least:
-                raise Problem(f"Для привязки нужно не меньше {least} станций, у которых есть и принятые координаты подсети, "
+                raise Problem(f"Для привязки нужно не меньше {least} станций, у которых есть и принятые координаты расчётного модуля, "
                               "и координаты основной сети в каталоге. Примите координаты и запомните координаты основной сети.")
             try:
                 if codes is None:
@@ -1725,18 +1743,18 @@ class Store:
             return self._subnet_out(conn, row)
 
     def subnet_ppp(self, who: dict, row_id: int, run: bool) -> dict:
-        """Начать или остановить расчёт абсолютных координат подсети (PPP-AR)."""
+        """Начать или остановить расчёт абсолютных координат расчётного модуля (PPP-AR)."""
         with self.db.transaction() as conn:
             row = self._subnet(conn, row_id, lock=True)
             if run and not row["station_ids"]:
-                raise Problem("В подсети нет станций.")
+                raise Problem("В расчётном модуле нет станций.")
             fields = {"ppp_state": "running", "ppp_started_at": dt.datetime.now(dt.timezone.utc), "ppp_results": Jsonb({}), "ppp_results_at": None} if run else {"ppp_state": "stopped"}
             row = self._update(conn, "subnets", row_id, fields)
             self._audit(conn, who, "PPP-AR начат" if run else "PPP-AR остановлен", "subnets", row_id, {"name": row["name"]})
             return self._subnet_out(conn, row)
 
     def solver_ppp_tasks(self) -> list[dict]:
-        """Подсети, для которых служба расчёта должна посчитать абсолютные координаты."""
+        """Расчётного модуля, для которых служба расчёта должна посчитать абсолютные координаты."""
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets WHERE ppp_state = 'running' ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
@@ -1760,7 +1778,7 @@ class Store:
         return True
 
     def solver_ppp_daily(self) -> list[dict]:
-        """Подсети с суточным PPP-AR и какие сутки у них уже посчитаны (и по каким продуктам)."""
+        """Расчётного модуля с суточным PPP-AR и какие сутки у них уже посчитаны (и по каким продуктам)."""
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets WHERE ppp_daily ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
@@ -1800,7 +1818,7 @@ class Store:
         return True
 
     def solver_tasks(self) -> list[dict]:
-        """Что считать службе расчёта: подсети, у которых расчёт идёт."""
+        """Что считать службе расчёта: расчётного модуля, у которых расчёт идёт."""
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets WHERE calc_state = 'running' AND reference_station_id IS NOT NULL AND ref_x IS NOT NULL ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
@@ -1815,7 +1833,7 @@ class Store:
 
     def solver_results(self, subnet_id: int, started_at: str, results: dict, final: bool = False) -> bool:
         """Ответ службы расчёта. Принимается, только если расчёт тот же самый и ещё идёт.
-        final — разовый расчёт закончен: подсеть переходит в «выполнен»."""
+        final — разовый расчёт закончен: расчётный модуль переходит в «выполнен»."""
         if not isinstance(results, dict) or len(dumps(results)) > 400_000:
             return False
         with self.db.transaction() as conn:
@@ -1936,7 +1954,7 @@ REACH_MM = 150  # расхождение ионосферы с базой, до 
 
 
 def reach(day: list | None, results: dict | None) -> dict | None:
-    """Зоны покрытия вокруг станций подсети. Порог один, отличается только час: гарантированный
+    """Зоны покрытия вокруг станций расчётного модуля. Порог один, отличается только час: гарантированный
     фикс — по худшей ионосфере за последние сутки (фикс есть в любое время дня), объективный —
     по ионосфере сейчас. Числа — оценка, роверами не проверена."""
     now = ((results or {}).get("network") or {}).get("iono_ppm")
@@ -1958,7 +1976,7 @@ PPP_DAY_HOURS = 12  # сутки короче в среднее не идут
 
 
 def ppp_mean(days: list[dict]) -> dict:
-    """Среднее по суточным расчётам PPP-AR одной подсети: { КОД: {x, y, z (ITRF2014), n, spread, ...} }.
+    """Среднее по суточным расчётам PPP-AR одной расчётного модуля: { КОД: {x, y, z (ITRF2014), n, spread, ...} }.
     В среднее идут сутки не короче PPP_DAY_HOURS; при четырёх и больше сутках выбросы отсеиваются.
     spread — средний квадратический разброс суток вокруг среднего, м: настоящая точность."""
     by_code: dict[str, list[dict]] = {}

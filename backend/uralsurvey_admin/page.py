@@ -76,7 +76,7 @@ def workspace() -> str:
     stops = [("0", "#a890ff"), ("0.3", "#f09ccc"), ("0.55", "#ffc48e"), ("0.78", "#86e2c0"), ("1", "#84c8ff")]
     gradient = el("svg", el("defs", el("linearGradient", *(f'<stop offset="{o}" stop-color="{c}"/>' for o, c in stops), id="holo-stroke", x1="0", y1="0", x2="1", y2="1")),
                   width="0", height="0", style="position:absolute", aria_hidden="true")
-    # Полоска обводки контура подсети и шкала цвета векторов — единственное, что лежит поверх карты
+    # Полоска обводки контура расчётного модуля и шкала цвета векторов — единственное, что лежит поверх карты
     draw = el("div", el("span", id="draw-count"), button("Убрать последнюю", small=True, data_draw="undo"), button("Готово", "primary", small=True, data_draw="done"),
               cls="adm-draw glass", id="draw-bar", hidden=True)
     legend = el("div", el("span", id="map-legend-name"), el("span", "1 м"), el("i"), el("span", "5 мм"), cls="adm-legend", id="map-legend", hidden=True)
@@ -110,7 +110,7 @@ def workspace() -> str:
 
 
 def dialogs() -> str:
-    """Все окна панели: форма записи, подсети, настройка."""
+    """Все окна панели: форма записи, расчётного модуля, настройка."""
     form = el("dialog", el(
         "form", el("h2", id="form-title"), el("div", id="form-fields"), el("p", cls="hint", id="form-note", hidden=True), error("form-error"),
         el("div", button("Удалить", extra="btn-danger", id="form-delete", hidden=True), el("span", cls="adm-grow"), button("Отмена", id="form-cancel"),
@@ -123,7 +123,7 @@ def dialogs() -> str:
         "form", el("h2", id="set-title"), field("", label_id="set-hint", id="set-value", type="number"), error("set-error"),
         el("div", button("Отмена", id="set-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),
         id="set-form", novalidate=True), cls="dialog adm-dialog", id="set-dialog")
-    # Ход расчёта подсети: этап, полоса готовности, строки по векторам
+    # Ход расчёта расчётного модуля: этап, полоса готовности, строки по векторам
     run = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_run="close", title="Закрыть"), el("h2", id="run-head"),
              el("p", cls="hint", id="run-stage"), el("div", el("i", id="run-bar"), cls="adm-progress"), el("ol", cls="log adm-run-log", id="run-log"),
              el("div", button("Закрыть", "primary", data_run="close"), cls="dialog-actions"), cls="dialog adm-dialog", id="run-dialog")

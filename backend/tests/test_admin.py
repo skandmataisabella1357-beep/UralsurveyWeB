@@ -437,7 +437,7 @@ class AdminTest(unittest.TestCase):
         # Ошибки ввода объясняются словами
         for body, text in [({"name": "плохое"}, "латинские"), ({"name": "EKB", "contour": [[57, 61], [58, 62]]}, "трёх точек"),
                            ({"name": "EKB", "station_ids": [999999]}, "нет в каталоге"),
-                           ({"name": "EKB", "station_ids": [ids[0]], "reference_station_id": ids[1]}, "входить в подсеть")]:
+                           ({"name": "EKB", "station_ids": [ids[0]], "reference_station_id": ids[1]}, "входить в расчётный модуль")]:
             status, res, _ = a.call("POST", "/api/admin/subnets", body)
             self.assertEqual(status, 400, res)
             self.assertIn(text, res["error"])
@@ -477,7 +477,7 @@ class AdminTest(unittest.TestCase):
                                                       "sd": [0.01, 0.01, 0.02], "spread": 0.004, "minutes": 40}}}
         self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": "2000-01-01T00:00:00+00:00", "results": results}, key)[1], {"stored": False})
         self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": task["startedAt"], "results": results}, key)[1], {"stored": True})
-        # Подсеть сама ничего не раздаёт; сеть раздачи не выпустить, пока координаты не приняты
+        # Расчётный модуль сама ничего не раздаёт; сеть раздачи не выпустить, пока координаты не приняты
         make = lambda kind, name="n3": a.call("POST", "/api/admin/networks", {"name": name, "title": "Сеть три", "subnet_id": sub["id"], "kind": kind})
         self.assertEqual(make("itrf")[0], 400)
         oper = Client(self.base)
@@ -500,7 +500,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(points["N3_SUB2"]["position"], [round(XYZ["x"] + 30000.1234, 4), XYZ["y"], round(XYZ["z"] - 9000.5, 4)])
         self.assertEqual(points["N3_SUB2"]["station"], "SUB2")
         self.assertIsNone(points["SUB1"]["position"])
-        # Без изменений в подсети новая версия не выпускается
+        # Без изменений в расчётном модуле новая версия не выпускается
         status, res, _ = a.call("POST", f"/api/admin/networks/{net['id']}/release", {})
         self.assertEqual(status, 400, res)
         self.assertIn("Изменений нет", res["error"])
@@ -535,11 +535,11 @@ class AdminTest(unittest.TestCase):
         for action in ("создана", "расчёт начат", "вычисление текущих координат", "приняты координаты", "расчёт остановлен"):
             self.assertIn(action, actions)
         self.assertIn("сеть выпущена", [r["action"] for r in a.call("GET", "/api/admin/audit?entity=networks")[1]["items"]])
-        # Удаление подсети выпущенную сеть не трогает: она раздаёт прежние координаты
+        # Удаление расчётного модуля выпущенную сеть не трогает: она раздаёт прежние координаты
         self.assertEqual(a.call("DELETE", base)[0], 200)
         net = next(n for n in a.call("GET", "/api/admin/networks")[1] if n["id"] == net["id"])
         self.assertEqual((net["subnet"], len(net["points"])), (None, 2))
-        self.assertEqual(a.call("POST", f"/api/admin/networks/{net['id']}/release", {})[0], 400, "без подсети новую версию выпустить не из чего")
+        self.assertEqual(a.call("POST", f"/api/admin/networks/{net['id']}/release", {})[0], 400, "без расчётного модуля новую версию выпустить не из чего")
         self.assertIn("N3_SUB2", [m["name"] for m in a.call("GET", "/api/admin/mountpoints")[1]])
         # Удаление сети убирает её точки подключения, станции остаются
         self.assertEqual(a.call("DELETE", f"/api/admin/networks/{net['id']}")[0], 200)
@@ -617,7 +617,7 @@ class AdminTest(unittest.TestCase):
         status, res, _ = a.call("POST", "/api/admin/stations", {"code": "NOXYZ", "source_mode": "listen", "source_port": 2170, "send_catalog": True})
         self.assertEqual(status, 400, res)
         self.assertIn("X, Y и Z", res["error"])
-        # Из одной подсети — две сети: чистые координаты и пересчитанные в систему основной сети
+        # Из одной расчётного модуля — две сети: чистые координаты и пересчитанные в систему основной сети
         status, pure, _ = a.call("POST", "/api/admin/networks", {"name": "itrf3", "subnet_id": sub["id"], "kind": "itrf"})
         self.assertEqual(status, 201, pure)
         self.assertEqual(a.call("POST", "/api/admin/networks/preview", {"subnet_id": sub["id"], "kind": "local"})[1]["stations"], 5)
@@ -636,7 +636,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((look["plan"]["kind"], look["plan"]["params"]["tx"], look["plan"]["transform"]["target"]), ("itrf_msk", -1.734, "msk66"))
         area = look["plan"]["transform"]["area"]
         self.assertTrue(55 < area["lat"] < 60 and area["dLon"] > 1, area)
-        self.assertEqual(look["plan"]["recipe"], {"coords": "itrf2014", "transform": "msk66", "stations": None, "systems": ["G", "R", "E", "C"], "rate": 1, "near": True})
+        self.assertEqual(look["plan"]["recipe"], {"source": "subnet", "coords": "itrf2014", "transform": "msk66", "stations": None, "systems": ["G", "R", "E", "C"], "rate": 1, "near": True})
         status, both, _ = a.call("POST", "/api/admin/networks", {"name": "auto3", "subnet_id": sub["id"], "kind": "itrf_msk"})
         self.assertEqual(status, 201, both)
         got = {p["name"]: p for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
@@ -658,7 +658,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((auto["AUTO3_NEAR"]["port"], len(auto["AUTO3_NEAR"]["points"]), auto["MSK3_NEAR"]["port"]), (2102, 5, None))
         self.assertIn("AUTO3_LNK2", auto["AUTO3_NEAR"]["points"])
         self.assertIsNone(a.call("PATCH", f"/api/admin/networks/{both['id']}", {"port": 2101})[1]["port"], "общий порт — значит без своего")
-        # Пересчёт привязки в подсети выпущенную сеть не меняет, пока не выпущена новая версия
+        # Пересчёт привязки в расчётном модуле выпущенную сеть не меняет, пока не выпущена новая версия
         self.assertEqual(a.call("POST", base + "/link", {"mode": "shift", "stations": ["LNK0", "LNK1", "LNK4"]})[0], 200)
         self.assertEqual(where()["MSK3_LNK2"], points["MSK3_LNK2"])
         look = a.call("POST", "/api/admin/networks/preview", {"network_id": net["id"]})[1]
@@ -699,7 +699,7 @@ class AdminTest(unittest.TestCase):
         status, sub, _ = a.call("POST", "/api/admin/subnets", {"name": "blocks", "station_ids": [s["id"] for s in made]})
         self.assertEqual(status, 201, sub)
         base = f"/api/admin/subnets/{sub['id']}"
-        # Координаты подсети — из разового PPP-AR, эпоха 2026,76; привязки нет
+        # Координаты расчётного модуля — из разового PPP-AR, эпоха 2026,76; привязки нет
         self.assertEqual(a.call("POST", base + "/ppp/start", {})[0], 200)
         job = next(j for j in a.call("GET", "/internal/solver", headers=key)[1]["ppp"] if j["id"] == sub["id"])
         res = {"epoch": 2026.76, "stations": {f"BLK{i}": {"x": t[0], "y": t[1], "z": t[2], "x14": t[0], "y14": t[1], "z14": t[2], "sd": [0.002] * 3, "fixed": True, "hours": 6} for i, t in enumerate(true)}}
@@ -743,8 +743,25 @@ class AdminTest(unittest.TestCase):
         # Возврат первой версии возвращает и её состав
         status, n20, _ = a.call("POST", f"/api/admin/networks/{n20['id']}/rollback", {"version": 1})
         self.assertEqual((status, n20["version"], n20["recipe"]["systems"], len(n20["points"])), (200, 3, ["G", "R"], 2))
+        # Сеть прямо из основной сети, без расчётного модуля и расчётов: те же координаты, но свои станции и состав
+        self.assertEqual(a.call("PATCH", f"/api/admin/stations/{made[0]['id']}", {"x": true[0][0], "y": true[0][1], "z": true[0][2], "send_catalog": True})[0], 200)
+        self.assertEqual(a.call("POST", "/api/admin/mountpoints", {"name": "BLK0", "station_id": made[0]["id"], "rtcm_station_id": 18})[0], 201)
+        status, nmain, _ = a.call("POST", "/api/admin/networks", {"name": "part", "recipe": {"source": "main", "coords": "itrf2020", "transform": "sk42", "stations": ["BLK0", "BLK2"], "systems": ["G", "R"]}})
+        self.assertEqual(status, 201, nmain)
+        self.assertEqual((nmain["subnet"], nmain["kind"], nmain["recipe"]["coords"], nmain["recipe"]["transform"], sorted(p["name"] for p in nmain["points"])),
+                         (None, "local", "stream", "none", ["PART_BLK0", "PART_BLK2"]))
+        d = a.call("GET", "/internal/directory", headers=key)[1]
+        points = {p["name"]: p for p in d["mountpoints"]}
+        # Координаты — как у обычной точки: из каталога, где включена подмена, иначе как шлёт база
+        self.assertEqual((points["PART_BLK0"]["position"], points["PART_BLK0"]["stationId"], points["PART_BLK2"]["position"], points["PART_BLK2"]["stationId"]),
+                         ([round(v, 4) for v in true[0]], 18, None, None))
+        self.assertEqual((points["PART_BLK2"]["filter"], points["PART_BLK2"]["transform"]), ({"systems": ["G", "R"], "rate": 1}, None))
+        self.assertIn("PART_NEAR", [x["name"] for x in d["auto"]])
+        status, nmain, _ = a.call("POST", f"/api/admin/networks/{nmain['id']}/release", {"recipe": {"source": "main", "stations": ["BLK0", "BLK1", "BLK2"], "rate": 5}})
+        self.assertEqual((status, nmain["version"], len(nmain["points"]), nmain["recipe"]["rate"]), (200, 2, 3, 5))
+        self.assertEqual(a.call("POST", "/api/admin/networks", {"name": "nosrc", "recipe": {"coords": "itrf2014"}})[0], 400, "без расчётного модуля и не из основной сети")
         self.assertEqual(a.call("DELETE", base)[0], 200)
-        for n in (n20, ngsk, nflow):
+        for n in (n20, ngsk, nflow, nmain):
             self.assertEqual(a.call("DELETE", f"/api/admin/networks/{n['id']}")[0], 200)
         for st in made:
             self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
