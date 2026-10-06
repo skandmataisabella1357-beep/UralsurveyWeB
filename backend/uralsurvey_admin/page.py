@@ -12,7 +12,8 @@ import pathlib
 from html import escape
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-FILES = {"/ui/": ROOT / "app" / "renderer", "/modules/coordsys/": ROOT / "modules" / "coordsys", "/modules/layers/": ROOT / "modules" / "layers", "/": ROOT / "server" / "web"}
+FILES = {"/ui/": ROOT / "app" / "renderer", "/modules/coordsys/": ROOT / "modules" / "coordsys", "/modules/layers/": ROOT / "modules" / "layers",
+         "/modules/transform/": ROOT / "modules" / "transform", "/modules/geoid/": ROOT / "modules" / "geoid", "/": ROOT / "server" / "web"}
 POLICY = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
 
 
@@ -145,7 +146,7 @@ def dialogs() -> str:
 
 def admin_page() -> bytes:
     styles = ["/ui/vendor/leaflet/leaflet.css", "/ui/styles.css", "/server.css", "/admin.css"]
-    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/modules/layers/parse.js", "/ui/map.js", "/admin.js"]
+    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/modules/transform/transform.js", "/modules/geoid/geoid.js", "/modules/layers/parse.js", "/ui/map.js", "/admin.js"]
     head = el(
         "head", el("meta", charset="utf-8"), el("meta", name="viewport", content="width=device-width, initial-scale=1"),
         el("meta", http_equiv="Content-Security-Policy", content=POLICY), el("title", "Uralsurvey — панель администратора"),

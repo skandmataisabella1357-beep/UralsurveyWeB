@@ -16,6 +16,7 @@ const { loadConfig } = require('../shared/config');
 const rtcm = require('../rtcm/messages');
 const ntrip = require('./ntrip');
 const { inside } = require('../../modules/layers/parse');
+const transform = require('../../modules/transform/transform');
 
 // Правила сеанса (ТЗ, раздел «Как пользователь работает с сервером»)
 const RULES = {
@@ -30,6 +31,7 @@ const RULES = {
   banMinutes: [1, 5, 15, 60],
   connectsPerMinute: 10, // подключений на логин
   areaGgaMs: 30000, // логин с областью работы обязан сообщить положение за это время
+  transformMs: 10000, // как часто повторять роверу сообщения пересчёта координат (1021, 1025)
 };
 
 // Что из потока станции идёт пользователю. Эфемериды и фирменные сообщения остаются внутри сервера.
@@ -84,6 +86,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   // ---------- Точки подключения ----------
 
   const points = new Map(); // имя точки -> точка
+  let portsReady = false; // слушатели портов заведены: справочник может открывать и закрывать порты сетей
   // Приводит набор точек к заданному. Точка с тем же именем сохраняет свои сеансы;
   // сеансы исчезнувших, выключенных и переведённых на другую станцию точек закрываются.
   function setPoints(defined, stations) {
@@ -95,7 +98,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       if (!station) throw new Error(`Точка подключения ${p.name}: станции ${p.station} нет в настройках.`);
       const old = points.get(p.name);
       const feed = feedOf(station.code, station.name);
-      const keep = old && old.feed === feed && p.enabled !== false;
+      const port = Number.isInteger(p.port) && p.port > 0 ? p.port : null;
+      const keep = old && old.feed === feed && p.enabled !== false && old.port === port;
       if (old && !keep) {
         for (const session of [...old.sessions]) close(session, p.enabled === false ? 'точка подключения выключена' : 'точка подключения переведена на другую станцию');
       }
@@ -106,6 +110,10 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         // Свои координаты базы для этой точки (точка подсети); null — как пришло от станции
         position: Array.isArray(p.position) && p.position.length === 3 && p.position.every(Number.isFinite) ? p.position : null,
         positionFrame: null,
+        // Свой порт раздачи (у сети раздачи); null — общий порт
+        port,
+        // Сообщения пересчёта: ровер сам получает местную систему из координат базы в ITRF2014
+        transform: transformOf(p.transform),
         listed: p.listed !== false,
         enabled: p.enabled !== false,
         access: Array.isArray(p.access) ? p.access : null, // null — все логины с доступом
@@ -180,6 +188,32 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       rtcm.restamp(out, point.stationId);
     }
     return out;
+  }
+
+  // Готовые кадры пересчёта для точки: на каждую зону — пара 1021 + 1025 с общим номером системы.
+  // t — { system, link, area } из справочника; без привязки пересчитывать нечем.
+  function transformOf(t) {
+    if (!t || !t.link) return null;
+    try {
+      const plan = transform.plan(t.link, t.system || 'msk66', t.area);
+      if (!plan) return null;
+      const frames = new Map(plan.projections.map((z) => [z.zone, Buffer.concat([rtcm.encodeHelmert({ ...plan.helmert, systemId: z.systemId }), rtcm.encodeProjection(z)])]));
+      return { plan, frames };
+    } catch (err) {
+      log(`раздача: сообщения пересчёта не собраны — ${err.message}`);
+      return null;
+    }
+  }
+
+  // Зона — по положению ровера, а пока он его не сообщил — по положению базы
+  function sendTransform(session) {
+    const t = session.point.transform;
+    if (!t) return;
+    const lon = session.gga ? session.gga.lon : session.point.feed.lon;
+    const zone = Number.isFinite(lon) ? transform.zoneFor(t.plan, lon) : t.plan.projections[0];
+    const plain = t.frames.get(zone.zone);
+    session.zone = zone.zone;
+    send(session, plain, session.version === 2 ? ntrip.chunk(plain) : null);
   }
 
   // Кадры одной порции отдаются одной записью на сеанс; для версии 2 обёртка строится один раз на точку
@@ -257,6 +291,12 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     for (const [ip, b] of bans) if (b.until < now && now - b.lastAt > 3600000) bans.delete(ip);
   }, 1000);
 
+  // Сообщения пересчёта повторяются: ровер, подключившийся к потоку позже, получит их в срок
+  const transformTimer = setInterval(() => {
+    for (const s of [...sessions]) if (!s.closed && s.point.transform) sendTransform(s);
+  }, R.transformMs);
+  if (transformTimer.unref) transformTimer.unref();
+
   // ---------- Доступ ----------
 
   const bans = new Map(); // адрес -> { wrong: [время], level, until, lastAt }
@@ -285,12 +325,12 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     else socket.end(ntrip.refusal(req.version, code));
   }
 
-  function liveTable() {
+  function liveTable(port = actualPort) {
     const now = Date.now();
     const list = [];
     for (const point of points.values()) {
       const feed = point.feed;
-      if (!point.enabled || !point.listed || now - feed.lastAt > R.stationLiveMs) continue;
+      if (!point.enabled || !point.listed || now - feed.lastAt > R.stationLiveMs || !onPort(point, port)) continue;
       list.push({
         name: point.name,
         city: feed.name,
@@ -302,22 +342,25 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         bitrate: Math.round(feed.rate * 8 / 100) * 100,
       });
     }
-    return ntrip.sourcetable({ host: cfg.publicHost || publicBind, port: actualPort, points: list });
+    return ntrip.sourcetable({ host: cfg.publicHost || publicBind, port, points: list });
   }
+  // Точка видна на своём порту; без своего порта — на общем
+  const onPort = (point, port) => (point.port || actualPort) === port;
 
   // Порядок проверок — как в ТЗ: разбор, блокировка, таблица, точка, пароль, запись, подписка, лимит, станция
   function admit(socket, req, ip) {
     const now = Date.now();
+    const port = socket.localPort;
     if (req.path === '') {
-      socket.end(ntrip.sourcetableResponse(req.version, liveTable()));
+      socket.end(ntrip.sourcetableResponse(req.version, liveTable(port)));
       return;
     }
     const point = points.get(req.path);
-    if (!point || !point.enabled) {
+    if (!point || !point.enabled || !onPort(point, port)) {
       refusals.push({ at: now, login: req.user || null, point: req.path, code: 404, reason: 'такой точки нет' });
       record({ t: 'refusal', login: req.user || '', point: req.path, code: 404, reason: 'такой точки нет', address: ip });
       // Версия 1 в ответ на незнакомую точку получает таблицу источников
-      socket.end(req.version === 2 ? ntrip.refusal(2, 404) : ntrip.sourcetableResponse(1, liveTable()));
+      socket.end(req.version === 2 ? ntrip.refusal(2, 404) : ntrip.sourcetableResponse(1, liveTable(port)));
       return;
     }
 
@@ -380,6 +423,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const plain = Buffer.concat(list);
       send(session, plain, req.version === 2 ? ntrip.chunk(plain) : null);
     }
+    sendTransform(session);
 
     const takeGga = (text) => {
       const g = ntrip.parseGga(text);
@@ -427,6 +471,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       users = dir.users;
       if (dir.rules && Number.isFinite(dir.rules.stationLostMs)) R.stationLostMs = dir.rules.stationLostMs;
       setPoints(dir.mountpoints, dir.stations);
+      if (portsReady) syncPorts();
       log(`раздача: справочник из базы — точек ${dir.mountpoints.length}, логинов ${Object.keys(dir.users).length}`);
     } catch (err) {
       log(`раздача: справочник из базы не применён — ${err.message}`);
@@ -459,50 +504,78 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   let actualPort = cfg.port;
   let server = null;
   const sockets = new Set(); // все открытые соединения, в том числе ещё не приславшие запрос
-  if (cfg.enabled) {
-    server = net.createServer((socket) => {
-      const ip = socket.remoteAddress || '';
-      socket.on('error', () => {});
-      sockets.add(socket);
-      socket.on('close', () => sockets.delete(socket));
-      const now = Date.now();
-      const ban = bans.get(ip);
-      // Заблокированный адрес и перегрузка: соединение закрывается без ответа
-      if ((ban && ban.until > now) || server.connectionsCount > R.maxTotal || (perAddress.get(ip) || 0) >= R.maxPerAddress) {
+  const load = { connections: 0 }; // общий счёт соединений на всех портах
+  // Одно входящее соединение: проверки перегрузки, разбор запроса, допуск
+  const accept = (socket) => {
+    const ip = socket.remoteAddress || '';
+    socket.on('error', () => {});
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    const now = Date.now();
+    const ban = bans.get(ip);
+    // Заблокированный адрес и перегрузка: соединение закрывается без ответа
+    if ((ban && ban.until > now) || load.connections > R.maxTotal || (perAddress.get(ip) || 0) >= R.maxPerAddress) {
+      socket.destroy();
+      return;
+    }
+    load.connections++;
+    perAddress.set(ip, (perAddress.get(ip) || 0) + 1);
+    socket.on('close', () => {
+      load.connections--;
+      const n = (perAddress.get(ip) || 1) - 1;
+      if (n > 0) perAddress.set(ip, n);
+      else perAddress.delete(ip);
+    });
+
+    let head = Buffer.alloc(0);
+    socket.setTimeout(R.requestTimeoutMs, () => socket.destroy());
+    const onHead = (data) => {
+      head = Buffer.concat([head, data]);
+      const req = ntrip.parseRequest(head);
+      if (req.pending) return;
+      socket.off('data', onHead);
+      if (req.invalid) {
         socket.destroy();
         return;
       }
-      server.connectionsCount++;
-      perAddress.set(ip, (perAddress.get(ip) || 0) + 1);
-      socket.on('close', () => {
-        server.connectionsCount--;
-        const n = (perAddress.get(ip) || 1) - 1;
-        if (n > 0) perAddress.set(ip, n);
-        else perAddress.delete(ip);
-      });
-
-      let head = Buffer.alloc(0);
-      socket.setTimeout(R.requestTimeoutMs, () => socket.destroy());
-      const onHead = (data) => {
-        head = Buffer.concat([head, data]);
-        const req = ntrip.parseRequest(head);
-        if (req.pending) return;
-        socket.off('data', onHead);
-        if (req.invalid) {
-          socket.destroy();
-          return;
-        }
-        admit(socket, req, ip);
-      };
-      socket.on('data', onHead);
-    });
-    server.connectionsCount = 0;
+      admit(socket, req, ip);
+    };
+    socket.on('data', onHead);
+  };
+  if (cfg.enabled) {
+    server = net.createServer(accept);
     actualPort = await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(cfg.port, publicBind, () => resolve(server.address().port));
     });
   }
 
+  // Свои порты сетей раздачи: открываются и закрываются по справочнику, без перезапуска службы
+  const extra = new Map(); // порт -> слушатель
+  function syncPorts() {
+    if (!cfg.enabled) return;
+    const wanted = new Set([...points.values()].map((p) => p.port).filter((p) => p && p !== actualPort));
+    for (const [port, srv] of extra) {
+      if (wanted.has(port)) continue;
+      extra.delete(port);
+      srv.close();
+      log(`раздача: порт ${port} закрыт — на нём больше нет сетей`);
+    }
+    for (const port of wanted) {
+      if (extra.has(port)) continue;
+      const srv = net.createServer(accept);
+      extra.set(port, srv);
+      srv.on('error', (err) => {
+        if (extra.get(port) === srv) extra.delete(port);
+        log(`раздача: порт ${port} не открыт — ${err.code === 'EADDRINUSE' ? 'он занят другой программой' : err.message}`);
+      });
+      srv.listen(port, publicBind, () => log(`раздача: порт ${port} открыт для сети раздачи`));
+    }
+  }
+  portsReady = true;
+  syncPorts();
+
+  // ---------- Состояние для службы управления ----------
   // ---------- Состояние для службы управления ----------
 
   const state = jsonServer({
@@ -518,7 +591,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         sessions: sessions.size,
         feeds: [...feeds.values()].map((f) => ({ station: f.code, name: f.name, bytes: f.bytes, lastDataAgeMs: f.lastAt ? now - f.lastAt : null })),
         points: [...points.values()].map((p) => ({
-          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed, ownPosition: Boolean(p.position),
+          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed, ownPosition: Boolean(p.position), transform: Boolean(p.transform), port: p.port || actualPort,
           live: now - p.feed.lastAt <= R.stationLiveMs, sessions: p.sessions.size,
         })),
         clients: [...sessions].map((s) => ({
@@ -553,6 +626,9 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     flush: () => (directory ? flush() : null),
     async stop() {
       clearInterval(watchdog);
+      clearInterval(transformTimer);
+      for (const srv of extra.values()) srv.close();
+      extra.clear();
       clearInterval(flushTimer);
       if (directory) directory.stop();
       bus.stop();

@@ -29,6 +29,8 @@ STATIC = [
     ("/ui/", ROOT / "app" / "renderer"),
     ("/modules/coordsys/", ROOT / "modules" / "coordsys"),
     ("/modules/layers/", ROOT / "modules" / "layers"),
+    ("/modules/transform/", ROOT / "modules" / "transform"),
+    ("/modules/geoid/", ROOT / "modules" / "geoid"),
     ("/", ROOT / "server" / "web"),
 ]
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",

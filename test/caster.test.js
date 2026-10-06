@@ -507,3 +507,58 @@ test('область работы логина: вне контура ровер
     await b.stop();
   }
 });
+
+test('сеть с пересчётом в потоке: ровер получает 1021 и 1025 своей зоны, обычная точка — нет', async () => {
+  const link = { tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 };
+  const b = await bench({ rules: { transformMs: 150 }, mountpoints: [{ name: 'TOUR', station: 'TOUR' },
+    { name: 'N3_TOUR', station: 'TOUR', position: [1499263.1082, 3031601.5162, 5389559.2451], transform: { system: 'msk66', link, area: { lat: 57.5, lon: 61, dLat: 2, dLon: 4 } } }] });
+  try {
+    const plain = rover(b.port, { path: '/TOUR', user: 'ivan', password: 'pass-ivan' });
+    const auto = rover(b.port, { path: '/N3_TOUR', user: 'two', password: 'p2' });
+    await until(() => b.service.sessions.size === 2);
+    b.feed('TOUR', POSITION, obs(2000));
+    const frames = (c) => new StreamParser().push(c.body()).filter((f) => f.kind === 'rtcm');
+    await until(() => frames(auto).filter((f) => f.type === 1025).length >= 2 && frames(plain).some((f) => f.type === 1074));
+    const helmert = rtcm.decodeHelmert(frames(auto).find((f) => f.type === 1021).payload);
+    const proj = rtcm.decodeProjection(frames(auto).find((f) => f.type === 1025).payload);
+    assert.deepEqual([helmert.sourceName, helmert.targetName, helmert.dx, helmert.dy, helmert.dz, helmert.ry, helmert.rz, helmert.scale], ['ITRF2014', 'SK42', -21.855, 137.174, 81.252, 0.35, 0.79, 0.22]);
+    assert.equal(helmert.systemId, proj.systemId);
+    // Станция TOUR стоит восточнее 63°03′ — её зона вторая, пока ровер не сообщил своё положение
+    assert.deepEqual([proj.systemId, proj.falseEasting, proj.falseNorthing], [2, 2500000, -5911057.63]);
+    assert.ok(Math.abs(proj.lon0 - 66.05) < 1e-8);
+    assert.equal(frames(plain).filter((f) => f.type === 1021 || f.type === 1025).length, 0);
+    const point = (await b.state()).points.find((p) => p.name === 'N3_TOUR');
+    assert.deepEqual([point.ownPosition, point.transform], [true, true]);
+    plain.end();
+    auto.end();
+  } finally {
+    await b.stop();
+  }
+});
+
+test('свой порт сети раздачи: на нём видны и доступны только её точки', async () => {
+  // Свободный порт: занять случайный, запомнить номер и отпустить
+  const free = await new Promise((resolve) => { const srv = net.createServer(); srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); }); });
+  const b = await bench({ mountpoints: [{ name: 'TOUR', station: 'TOUR' }, { name: 'N3_TOUR', station: 'TOUR', port: free }] });
+  try {
+    b.feed('TOUR', POSITION, obs(1000));
+    await until(async () => (await b.state()).points.find((p) => p.name === 'N3_TOUR').port === free);
+    const table = async (port) => { const c = rover(port, { path: '/', user: 'ivan', password: 'pass-ivan' }); await until(() => c.closed); return c.text(); };
+    await until(async () => /N3_TOUR/.test(await table(free).catch(() => '')));
+    const own = await table(free);
+    const common = await table(b.port);
+    assert.ok(/STR;N3_TOUR;/.test(own) && !/STR;TOUR;/.test(own), 'на порту сети — только её точки');
+    assert.ok(/STR;TOUR;/.test(common) && !/STR;N3_TOUR;/.test(common), 'на общем порту точек сети нет');
+    // Точка сети на общем порту не отдаётся, на своём — отдаётся
+    const wrong = rover(b.port, { path: '/N3_TOUR', user: 'two', password: 'p2', version: 2 });
+    await until(() => wrong.closed);
+    assert.match(wrong.text(), /404/);
+    const right = rover(free, { path: '/N3_TOUR', user: 'two', password: 'p2' });
+    await until(() => b.service.sessions.size === 1);
+    b.feed('TOUR', obs(2000));
+    await until(() => new StreamParser().push(right.body()).some((f) => f.kind === 'rtcm' && f.type === 1074));
+    right.end();
+  } finally {
+    await b.stop();
+  }
+});

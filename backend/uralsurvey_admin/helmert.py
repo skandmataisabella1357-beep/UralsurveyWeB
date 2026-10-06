@@ -69,8 +69,8 @@ def apply(p: dict, xyz: list[float]) -> list[float]:
     return [k * (x + wz * y - wy * z) + float(p["tx"]), k * (-wz * x + y + wx * z) + float(p["ty"]), k * (wy * x - wx * y + z) + float(p["tz"])]
 
 
-def enu(xyz: list[float], d: list[float]) -> list[float]:
-    """Разность d в точке xyz: на восток, на север и вверх."""
+def geodetic(xyz: list[float]) -> tuple[float, float]:
+    """Широта и долгота точки, радианы (эллипсоид WGS-84)."""
     x, y, z = xyz
     lon = math.atan2(y, x)
     e2 = 0.00669438002290
@@ -79,5 +79,20 @@ def enu(xyz: list[float], d: list[float]) -> list[float]:
     for _ in range(5):
         nn = 6378137.0 / math.sqrt(1 - e2 * math.sin(lat) ** 2)
         lat = math.atan2(z + e2 * nn * math.sin(lat), p)
+    return lat, lon
+
+
+def area(points: list[list[float]], margin: float = 1.0) -> dict:
+    """Область действия параметров в градусах: центр и полуразмеры по станциям с запасом."""
+    where = [geodetic(p) for p in points]
+    lats = [math.degrees(w[0]) for w in where]
+    lons = [math.degrees(w[1]) for w in where]
+    return {"lat": round((min(lats) + max(lats)) / 2, 3), "lon": round((min(lons) + max(lons)) / 2, 3),
+            "dLat": round((max(lats) - min(lats)) / 2 + margin, 3), "dLon": round((max(lons) - min(lons)) / 2 + margin, 3)}
+
+
+def enu(xyz: list[float], d: list[float]) -> list[float]:
+    """Разность d в точке xyz: на восток, на север и вверх."""
+    lat, lon = geodetic(xyz)
     sl, cl, sp, cp = math.sin(lon), math.cos(lon), math.sin(lat), math.cos(lat)
     return [-sl * d[0] + cl * d[1], -sp * cl * d[0] - sp * sl * d[1] + cp * d[2], cp * cl * d[0] + cp * sl * d[1] + sp * d[2]]

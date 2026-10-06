@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql", "010_iono_day.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql", "010_iono_day.sql", "011_network_kinds.sql", "012_network_port.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -631,6 +631,27 @@ class AdminTest(unittest.TestCase):
             self.assertAlmostEqual(got_v, float(want), delta=0.001)
         # У выбивающейся станции координаты согласованы с остальными, а не с каталогом
         self.assertGreater(abs(points["MSK3_LNK4"][0] - float(made[4]["x"])), 1.0)
+        # Третий вид: координаты базы в ITRF2014, а привязка уходит роверу сообщениями пересчёта
+        look = a.call("POST", "/api/admin/networks/preview", {"subnet_id": sub["id"], "kind": "itrf_msk"})[1]
+        self.assertEqual((look["plan"]["kind"], look["plan"]["params"]["tx"], look["plan"]["system"]), ("itrf_msk", -1.734, "msk66"))
+        self.assertTrue(55 < look["plan"]["area"]["lat"] < 60 and look["plan"]["area"]["dLon"] > 1, look["plan"]["area"])
+        status, both, _ = a.call("POST", "/api/admin/networks", {"name": "auto3", "subnet_id": sub["id"], "kind": "itrf_msk"})
+        self.assertEqual(status, 201, both)
+        got = {p["name"]: p for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
+        self.assertEqual(got["AUTO3_LNK2"]["position"], [round(v, 4) for v in true[2]])
+        self.assertEqual((got["AUTO3_LNK2"]["transform"]["system"], got["AUTO3_LNK2"]["transform"]["link"]["tx"]), ("msk66", -1.734))
+        self.assertIsNone(got["ITRF3_LNK2"]["transform"])
+        self.assertIsNone(got["MSK3_LNK2"]["transform"])
+        # Свой порт раздачи: точки сети уходят на него; общий порт и занятые сервером не годятся
+        for bad, text in ((2115, "приём станций"), (8110, "служебные"), (80, "от 1024")):
+            status, res, _ = a.call("PATCH", f"/api/admin/networks/{both['id']}", {"port": bad})
+            self.assertEqual(status, 400, res)
+            self.assertIn(text, res["error"])
+        status, both, _ = a.call("PATCH", f"/api/admin/networks/{both['id']}", {"port": 2102})
+        self.assertEqual((status, both["port"]), (200, 2102))
+        ports = {p["name"]: p["port"] for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
+        self.assertEqual((ports["AUTO3_LNK2"], ports["MSK3_LNK2"], ports["LNK0"]), (2102, None, None))
+        self.assertIsNone(a.call("PATCH", f"/api/admin/networks/{both['id']}", {"port": 2101})[1]["port"], "общий порт — значит без своего")
         # Пересчёт привязки в подсети выпущенную сеть не меняет, пока не выпущена новая версия
         self.assertEqual(a.call("POST", base + "/link", {"mode": "shift", "stations": ["LNK0", "LNK1", "LNK4"]})[0], 200)
         self.assertEqual(where()["MSK3_LNK2"], points["MSK3_LNK2"])
@@ -638,6 +659,12 @@ class AdminTest(unittest.TestCase):
         self.assertTrue(1.0 < look["max_shift"] < 1.5 and not look["added"] and not look["gone"], look)
         status, net, _ = a.call("POST", f"/api/admin/networks/{net['id']}/release", {})
         self.assertEqual((status, net["version"]), (200, 2))
+        # У сети с пересчётом в потоке координаты те же, но параметры другие — это тоже новая версия
+        look = a.call("POST", "/api/admin/networks/preview", {"network_id": both["id"]})[1]
+        self.assertEqual((look["max_shift"], look["params_changed"]), (0.0, True))
+        status, both, _ = a.call("POST", f"/api/admin/networks/{both['id']}/release", {})
+        self.assertEqual((status, both["version"]), (200, 2))
+        self.assertEqual(a.call("POST", f"/api/admin/networks/{both['id']}/release", {})[0], 400)
         self.assertNotEqual(where()["MSK3_LNK2"], points["MSK3_LNK2"])
         # Возврат прежней версии: координаты как в первой, версия — третья
         status, net, _ = a.call("POST", f"/api/admin/networks/{net['id']}/rollback", {"version": 1})
@@ -645,8 +672,8 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(where()["MSK3_LNK2"], points["MSK3_LNK2"])
         self.assertEqual(a.call("POST", f"/api/admin/networks/{net['id']}/rollback", {"version": 9})[0], 400)
         got = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
-        self.assertEqual(sorted(n["name"] for n in got["networks"]), ["ITRF3", "MSK3"])
-        for n in (pure, net):
+        self.assertEqual(sorted(n["name"] for n in got["networks"]), ["AUTO3", "ITRF3", "MSK3"])
+        for n in (pure, net, both):
             self.assertEqual(a.call("DELETE", f"/api/admin/networks/{n['id']}")[0], 200)
         self.assertEqual(a.call("POST", base + "/ppp/clear", {})[1]["ppp_mean"]["days"], [])
         self.assertEqual(a.call("DELETE", base)[0], 200)

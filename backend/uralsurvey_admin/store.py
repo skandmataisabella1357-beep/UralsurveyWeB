@@ -923,7 +923,10 @@ class Store:
             # Области работы логинов: контуры слоёв, назначенных хотя бы одному логину
             areas = {r["id"]: [f["points"] for f in r["features"] if f.get("kind") == "polygon"]
                      for r in conn.execute("SELECT id, features FROM layers WHERE id IN (SELECT area_layer_id FROM ntrip_logins WHERE area_layer_id IS NOT NULL)")}
-            released = {r["id"]: (r["release"] or {}).get("stations") or {} for r in conn.execute("SELECT id, release FROM networks")}
+            net_rows = conn.execute("SELECT id, release, port FROM networks").fetchall()
+            releases = {r["id"]: r["release"] or {} for r in net_rows}
+            net_ports = {r["id"]: r["port"] for r in net_rows}
+            released = {i: r.get("stations") or {} for i, r in releases.items()}
         today = dt.date.today()
         by_tariff: dict[int, list[str]] = {}
         for tp in tariff_points:
@@ -985,6 +988,13 @@ class Store:
                 src.update(ecef=[float(s["x"]), float(s["y"]), float(s["z"])])
             return src
 
+        # Сеть «ITRF2014 и пересчёт»: точка отдаёт роверу ещё и сообщения 1021 и 1025
+        def transform(p: dict):
+            rel = releases.get(p["network_id"]) or {}
+            if rel.get("kind") != "itrf_msk" or not rel.get("params"):
+                return None
+            return {"system": rel.get("system", "msk66"), "link": rel["params"], "area": rel.get("area")}
+
         return {
             "stations": [{"code": s["code"], "name": s["name"] or s["code"], "source": station_source(s),
                           "ecef": None if s["x"] is None else [float(s["x"]), float(s["y"]), float(s["z"])],
@@ -992,7 +1002,7 @@ class Store:
                           "antennaType": s["antenna_type"], "receiverType": s["receiver_type"]} for s in stations],
             "mountpoints": [{"name": p["name"], "station": p["station_code"], "stationId": p["rtcm_station_id"], "listed": p["listed"],
                              "enabled": p["enabled"], "access": staff_logins if p["access"] == "staff" else None,
-                             "position": own_position(p)} for p in points if p["network_id"] is None or own_position(p)],
+                             "position": own_position(p), "transform": transform(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or own_position(p)],
             "users": users,
             "rules": {"stationLostMs": lost * 1000},
         }
@@ -1340,14 +1350,15 @@ class Store:
     # ---------- Сети раздачи: выпуск согласованных координат подсети ----------
 
     def _network_build(self, conn, subnet: dict, kind: str) -> dict:
-        """Что вошло бы в выпуск сейчас: координаты станций подсети — как есть (itrf) или
-        пересчитанные привязкой в систему основной сети (local)."""
+        """Что вошло бы в выпуск сейчас. local — координаты станций пересчитаны привязкой в систему
+        основной сети; itrf — координаты подсети как есть; itrf_msk — как есть, а привязка уходит
+        роверу сообщениями пересчёта в потоке."""
         accepted = subnet["accepted"] or {}
         link = subnet["link"] or {}
         if not accepted:
             raise Problem("В подсети нет принятых координат: выпускать нечего. Примите координаты на шаге «PPP-AR» или «Расчёт».")
-        if kind == "local" and not link.get("params"):
-            raise Problem("Сначала рассчитайте привязку к основной сети: без неё координаты «как основная сеть» не получить.")
+        if kind != "itrf" and not link.get("params"):
+            raise Problem("Сначала рассчитайте привязку подсети к основной сети: без неё пересчёт в МСК не из чего собрать.")
         known = {r["code"] for r in conn.execute("SELECT code FROM stations WHERE id = ANY(%s)", (subnet["station_ids"],))}
         stations = {}
         for code in sorted(accepted):
@@ -1358,9 +1369,13 @@ class Store:
             stations[code] = {"x": x, "y": y, "z": z, "src": src}
         if not stations:
             raise Problem("Станций с принятыми координатами в подсети нет.")
-        out = {"kind": kind, "subnet": subnet["name"], "stations": stations}
-        if kind == "local":
+        epochs = [float(a["epoch"]) for a in accepted.values() if isinstance(a, dict) and a.get("epoch")]
+        out = {"kind": kind, "subnet": subnet["name"], "stations": stations, "epoch": round(sum(epochs) / len(epochs), 3) if epochs else None}
+        # Привязка запоминается в выпуске всегда, когда она есть: панель показывает её и у сети ITRF2014
+        if link.get("params"):
             out.update(params=link["params"], mode=link.get("mode", "full"), used=link.get("used", []))
+        if kind == "itrf_msk":
+            out.update(system="msk66", area=helmert.area([s["src"] for s in stations.values()]))
         return out
 
     @staticmethod
@@ -1370,7 +1385,9 @@ class Store:
         shifts = {c: round(math.dist([s["x"], s["y"], s["z"]], [was[c]["x"], was[c]["y"], was[c]["z"]]), 4) for c, s in new["stations"].items() if c in was}
         worst = max(shifts, key=shifts.get) if shifts else None
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
-                "max_shift": shifts[worst] if worst else None, "max_station": worst}
+                "max_shift": shifts[worst] if worst else None, "max_station": worst,
+                # У сети с пересчётом в потоке координаты те же, а меняются параметры в сообщении 1021
+                "params_changed": bool(old) and new.get("kind") == "itrf_msk" and (old or {}).get("params") != new.get("params")}
 
     def _network_view(self, conn, row: dict) -> dict:
         out = _jsonable(row)
@@ -1392,6 +1409,23 @@ class Store:
             raise Problem(f"Нет такой сети раздачи: №{network_id}.", 404)
         return row
 
+    def _network_port(self, conn, value, network_id: int | None = None) -> int | None:
+        """Порт раздачи сети: пусто или общий порт — раздаётся вместе с основной сетью. Свой порт
+        не должен попадать на порты приёма станций и служебные порты сервера."""
+        if value in (None, "", 0, NTRIP_PORT, str(NTRIP_PORT)):
+            return None
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            raise Problem("Порт раздачи — число от 1024 до 65535.") from None
+        if not 1024 <= port <= 65535:
+            raise Problem("Порт раздачи — число от 1024 до 65535.")
+        if 2110 <= port <= 2159 or 7100 <= port <= 7110 or port in (8110, 8111, 5432, 54329):
+            raise Problem(f"Порт {port} занят сервером: 2110–2159 — приём станций, 7100–7110, 8110 и 5432 — служебные. Выберите другой, например 2102.")
+        if conn.execute("SELECT 1 FROM stations WHERE source_mode = 'listen' AND source_port = %s", (port,)).fetchone():
+            raise Problem(f"На порту {port} сервер принимает поток станции.")
+        return port
+
     def network_preview(self, data: dict) -> dict:
         """Что изменится при выпуске: для новой сети (subnet_id, kind) или для следующей версии (network_id)."""
         with self.db.connection() as conn:
@@ -1400,10 +1434,12 @@ class Store:
             if not isinstance(subnet_id, int):
                 raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего." if net else "Укажите подсеть.")
             kind = net["kind"] if net else str(data.get("kind") or "")
-            if kind not in ("local", "itrf"):
-                raise Problem("Вид сети: local или itrf.")
+            if kind not in NET_KINDS:
+                raise Problem("Вид сети: local, itrf или itrf_msk.")
             new = self._network_build(conn, self._subnet(conn, subnet_id), kind)
-            return {"stations": len(new["stations"]), **self._network_diff(new, net["release"] if net else {})}
+            # plan — что будет передаваться: по нему панель показывает параметры до выпуска
+            plan = {k: new.get(k) for k in ("kind", "params", "mode", "used", "epoch", "system", "area")}
+            return {"stations": len(new["stations"]), "plan": plan, **self._network_diff(new, net["release"] if net else {})}
 
     def _network_store(self, conn, who: dict, net: dict, release: dict, action: str) -> dict:
         """Записать выпуск: новая версия, история, точки подключения по станциям выпуска."""
@@ -1431,14 +1467,15 @@ class Store:
         if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
             raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
         kind = str(data.get("kind") or "")
-        if kind not in ("local", "itrf"):
-            raise Problem("Вид сети: local или itrf.")
+        if kind not in NET_KINDS:
+            raise Problem("Вид сети: local, itrf или itrf_msk.")
         if not isinstance(data.get("subnet_id"), int):
             raise Problem("Укажите подсеть, из которой выпускается сеть.")
         with self.db.transaction() as conn:
             subnet = self._subnet(conn, data["subnet_id"], lock=True)
             release = self._network_build(conn, subnet, kind)
-            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"], "kind": kind})
+            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"], "kind": kind,
+                                                  "port": self._network_port(conn, data.get("port"))})
             return self._network_store(conn, who, net, release, "сеть выпущена")
 
     def network_release(self, who: dict, network_id: int) -> dict:
@@ -1449,7 +1486,7 @@ class Store:
                 raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего.")
             release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True), net["kind"])
             diff = self._network_diff(release, net["release"])
-            if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()):
+            if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()) and not diff["params_changed"]:
                 raise Problem("Изменений нет: координаты в подсети те же, что в действующей версии сети.")
             return self._network_store(conn, who, net, release, "выпущена новая версия сети")
 
@@ -1465,9 +1502,14 @@ class Store:
 
     def network_update(self, who: dict, network_id: int, data: dict) -> dict:
         with self.db.transaction() as conn:
-            self._network(conn, network_id, lock=True)
-            row = self._update(conn, "networks", network_id, {"title": str(data.get("title") or "").strip()[:80]})
-            self._audit(conn, who, "изменена", "networks", network_id, {"name": row["name"]})
+            before = self._network(conn, network_id, lock=True)
+            fields = {}
+            if "title" in data:
+                fields["title"] = str(data.get("title") or "").strip()[:80]
+            if "port" in data:
+                fields["port"] = self._network_port(conn, data.get("port"), network_id)
+            row = self._update(conn, "networks", network_id, fields)
+            self._audit(conn, who, "изменена", "networks", network_id, {"name": row["name"], "fields": sorted(fields), "port": row["port"] if "port" in fields else before["port"]})
             return self._network_view(conn, row)
 
     def network_delete(self, who: dict, network_id: int) -> None:
@@ -1764,6 +1806,8 @@ class Store:
         return "﻿" + "\r\n".join(lines) + "\r\n"
 
 
+NTRIP_PORT = 2101  # общий порт раздачи
+NET_KINDS = ("local", "itrf", "itrf_msk")  # как основная сеть; ITRF2014; ITRF2014 и пересчёт в потоке
 REACH_MM = 150  # расхождение ионосферы с базой, до которого двухчастотный ровер получает фикс
 
 

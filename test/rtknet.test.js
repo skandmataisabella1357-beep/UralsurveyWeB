@@ -248,3 +248,48 @@ test('журнал обрывов: события по снимкам состо
   assert.deepEqual(tr.step([snap('A', 'online')], 80000), [{ t: 'gone', station: 'B', at: 80000 }]);
   assert.deepEqual(tr.step([snap('A', 'online')], 82000), []);
 });
+
+test('пересчёт в потоке: семь параметров 1021 повторяют цепочку «привязка → обратный ход ГОСТ»', () => {
+  const T = require('../modules/transform/transform');
+  const C = require('../modules/coordsys/coordsys');
+  const rtcmMsg = require('../server/rtcm/messages');
+  const datum = C.describe('msk66').datum;
+  const points = [[1719977.663, 3048216.851, 5314477.642], [1499264.8, 3031597.7, 5389560.7], [1875908.2, 2975618.6, 5302876.0]];
+  for (const link of [{ tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 }, { tx: 0.7491, ty: 0.6039, tz: 1.1418, rx: -0.147343, ry: -0.067344, rz: -0.022601, m: -0.25367 }]) {
+    const plan = T.plan(link, 'msk66', { lat: 57.5, lon: 61, dLat: 2, dLon: 4 });
+    // То, что уйдёт в поток, читается обратно теми же числами
+    const frame = rtcmMsg.encodeHelmert({ ...plan.helmert, systemId: 1 });
+    const sent = rtcmMsg.decodeHelmert(frame.subarray(3, frame.length - 3));
+    for (const k of ['dx', 'dy', 'dz', 'rx', 'ry', 'rz', 'scale']) assert.ok(Math.abs(sent[k] - plan.helmert[k]) < 1e-9, `${k}: ${sent[k]} и ${plan.helmert[k]}`);
+    assert.equal(sent.utilized, T.UTILIZED_1025);
+    for (const X of points) {
+      const net1 = T.apply({ dx: link.tx, dy: link.ty, dz: link.tz, rx: link.rx, ry: link.ry, rz: link.rz, scale: link.m }, X);
+      const want = C.fromWgs84(net1, datum);
+      const got = T.apply(sent, X);
+      assert.ok(Math.hypot(...got.map((v, i) => v - want[i])) < 0.001, 'расхождение с цепочкой больше миллиметра');
+    }
+  }
+  // Проекция — на каждую зону своя; зона выбирается по долготе
+  const plan = T.plan({ tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 }, 'msk66');
+  assert.deepEqual(plan.projections.map((z) => [z.zone, z.lon0, z.falseEasting]), [[1, 60.05, 1500000], [2, 66.05, 2500000], [3, 72.05, 3500000]]);
+  assert.equal(T.zoneFor(plan, 60.6).zone, 1);
+  assert.equal(T.zoneFor(plan, 64.2).zone, 2);
+  const proj = rtcmMsg.decodeProjection(rtcmMsg.encodeProjection(plan.projections[0]).subarray(3, -3));
+  assert.ok(Math.abs(proj.lon0 - 60.05) < 1e-8 && proj.falseNorthing === -5911057.63 && proj.scale === 1);
+  assert.equal(T.plan(null, 'msk66'), null);
+});
+
+test('геоид Russia2008: высоты совпадают с таблицей заказчика, вне вырезки ответа нет', () => {
+  const geoid = require('../modules/geoid/geoid').create(require('../modules/geoid/russia2008-ural.json'));
+  // Екатеринбург: геоид ниже эллипсоида примерно на восемь метров
+  const ekb = geoid.undulation(56.84, 60.6);
+  assert.ok(ekb < -7.5 && ekb > -9, String(ekb));
+  // Между узлами значение меняется плавно: соседние точки в ста метрах отличаются на миллиметры
+  assert.ok(Math.abs(geoid.undulation(56.84, 60.6015) - ekb) < 0.02);
+  assert.ok(Math.abs(geoid.undulation(58.06, 63.69) - -14.5) < 0.3);
+  // Станция EKB2: высота над эллипсоидом 261,078 м, отметка в таблице заказчика (TBC) 269,172 м
+  assert.ok(Math.abs(261.0781 - geoid.undulation(56.8085558, 60.565832) - 269.172) < 0.002);
+  assert.equal(geoid.undulation(40, 60), null);
+  assert.equal(geoid.undulation(56, 80), null);
+  assert.equal(geoid.model, 'Russia2008');
+});

@@ -222,5 +222,13 @@
     };
   }
 
-  return { list, register, convert, inverse, gaussKruger, gaussKrugerInverse, fromWgs84, toWgs84, toGeodetic, ELLIPSOIDS, DATUMS };
+  // Описание системы целиком: исходная система, эллипсоид и зоны — для сообщений пересчёта в потоке
+  function describe(systemId) {
+    const system = SYSTEMS.find((x) => x.id === systemId);
+    if (!system) return null;
+    const datum = DATUMS[system.datum];
+    return { id: system.id, name: system.name, datum: { ...datum, id: system.datum }, ellipsoid: ELLIPSOIDS[datum.ellipsoid], zones: (system.zones || []).map((z) => ({ ...z, verified: system.verified && z.verified !== false })) };
+  }
+
+  return { list, register, convert, inverse, describe, gaussKruger, gaussKrugerInverse, fromWgs84, toWgs84, toGeodetic, ELLIPSOIDS, DATUMS };
 });
