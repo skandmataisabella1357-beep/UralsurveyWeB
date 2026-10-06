@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql", "010_iono_day.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -519,6 +519,17 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": task["startedAt"], "results": results, "final": True}, key)[1], {"stored": True})
         sub = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
         self.assertEqual((sub["calc_state"], sub["results"]["cycles"]), ("stopped", 3))
+        # Зоны покрытия: гарантированный фикс — по худшей ионосфере за сутки, объективный — по нынешней
+        self.assertIsNone(sub["reach"])
+        from uralsurvey_admin.store import reach
+        hour_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=5)).isoformat()
+        self.assertEqual(reach([[hour_ago, 3.0]], {"network": {"iono_ppm": 1.5}}), {"now_ppm": 1.5, "worst_ppm": 3.0, "hours": 5.0, "sure_km": 25.0, "real_km": 100.0})
+        self.assertEqual(reach([], {"network": {"iono_ppm": 3.0}})["real_km"], 50.0)
+        status, sub, _ = a.call("POST", base + "/compute", {})
+        task = a.call("GET", "/internal/solver", headers=key)[1]["subnets"][0]
+        self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": task["startedAt"], "results": {**results, "network": {"iono_ppm": 2.5}}, "final": True}, key)[1], {"stored": True})
+        sub = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
+        self.assertEqual((sub["reach"]["sure_km"], sub["reach"]["real_km"], "iono_day" in sub), (30.0, 60.0, False))
         self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1]["subnets"], [])
         actions = [r["action"] for r in a.call("GET", "/api/admin/audit?entity=subnets")[1]["items"]]
         for action in ("создана", "расчёт начат", "вычисление текущих координат", "приняты координаты", "расчёт остановлен"):

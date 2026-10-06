@@ -553,7 +553,7 @@
 
   // ---------- Всплывающее окно у значков ленты ----------
   // Наведение показывает, что значок делает и что сейчас показано. У зон покрытия в окне ещё и
-  // выбор: светить фиксированное решение, плавающее или оба.
+  // выбор: светить гарантированный фикс, объективный или оба.
 
   const TIP_SHOW = {
     labels: 'Коды станций рядом с точками на карте.',
@@ -606,9 +606,9 @@
     if (id !== 'radii') return `<b>${title}</b><span class="adm-tip-state ${SHOW[id] ? 'is-on' : ''}">${SHOW[id] ? 'показано' : 'скрыто'}</span><p>${TIP_SHOW[id]}</p>`;
     const one = Object.values(radiiNow())[0];
     const chip = (k, text, color) => `<button class="adm-chip" type="button" data-zone="${k}" aria-current="${SHOW[k]}"><i style="background:${color}"></i>${text}</button>`;
-    return `<b>Зоны покрытия</b><p>Где ровер получит решение — по расчёту сети, вокруг станций на связи.</p>
-      <div class="adm-tip-row">${chip('fix', `Фиксированное${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, reachColors().fix[0])}${chip('float', `Плавающее${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, reachColors().float[0])}${chip('over', 'Перекрытие фикса · две базы и больше', reachColors().over[0])}</div>
-      <p>${one ? `Ионосфера сейчас: ${num(one.iono_ppm, 1)} мм на км. Вне зон сеть ровера не покрывает.` : 'Расчёта сети ещё не было: запустите расчёт подсети — зоны появятся вокруг её станций.'}</p>`;
+    return `<b>Зоны покрытия</b><p>Где ровер получит фикс — по расчёту сети, вокруг станций на связи.</p>
+      <div class="adm-tip-row">${chip('fix', `Гарантированный фикс${one ? ` · до ${num(one.fix_km, 0)} км` : ''}`, reachColors().fix[0])}${chip('float', `Объективный фикс${one ? ` · до ${num(one.float_km, 0)} км` : ''}`, reachColors().float[0])}${chip('over', 'Перекрытие гарантированного · две базы и больше', reachColors().over[0])}</div>
+      <p>${one ? `Гарантированный — фикс быстро и в любое время суток: по худшей ионосфере за ${one.hours >= 23.5 ? 'сутки' : `последние ${num(one.hours, 0)} ч (сутки ещё копятся)`}, ${num(one.worst_ppm, 1)} мм на км. Объективный — где двухчастотный ровер получает фикс сейчас, при ${num(one.iono_ppm, 1)} мм на км; ждать его дольше. Это оценка: роверами в поле она не проверена.` : 'Расчёта сети ещё не было: запустите расчёт подсети — зоны появятся вокруг её станций.'}</p>`;
   }
   // key — что показать; по умолчанию берётся у самого элемента
   function showTip(el, key) {
@@ -682,11 +682,13 @@
     const out = {};
     const when = {};
     for (const g of lists.subnets) {
-      const got = g.results && g.results.stations;
-      if (!got) continue;
+      // Радиус один на подсеть: гарантированный фикс (fix_km) — по худшей ионосфере за сутки,
+      // объективный (float_km) — по нынешней
+      if (!g.reach) continue;
       const at = Date.parse(g.results_at) || 0;
-      for (const [code, r] of Object.entries(got)) {
-        if (r.fix_km && (!when[code] || at > when[code])) { out[code] = r; when[code] = at; }
+      const r = { fix_km: g.reach.sure_km, float_km: g.reach.real_km, iono_ppm: g.reach.now_ppm, worst_ppm: g.reach.worst_ppm, hours: g.reach.hours };
+      for (const code of g.stations) {
+        if (!when[code] || at > when[code]) { out[code] = r; when[code] = at; }
       }
     }
     return out;
@@ -973,7 +975,7 @@
     const stations = (live ? live.stations : []).filter((st) => st.position && st.link.state === 'online' && radii[st.id]).map((st) => [st.id, st.position.lat, st.position.lon, radii[st.id].fix_km, radii[st.id].float_km]);
     const nets = SHOW.contours ? lists.subnets.filter((g) => g.contour.length >= 3 && !(view === 'subnets' && sub.id === g.id) && !sub.drawing).map((g) => [g.name, g.contour]) : [];
     const rovers = SHOW.rovers ? (live ? live.clients : []).filter((c) => c.position).map((c) => [c.login, c.point, c.position.lat, c.position.lon, c.position.kind]) : [];
-    // Выбранная станция: её круги фикса и плавающего решения выделяются ярче общей зоны
+    // Выбранная станция: её круги гарантированного и объективного фикса выделяются ярче общей зоны
     const chosen = view === 'stations' && picked ? (rows.find((r) => r.id === picked) || {}).code : null;
     const tone = reachColors();
     const key = JSON.stringify([stations, nets, rovers, SHOW.fix, SHOW.float, SHOW.over, chosen, tone]);
@@ -981,9 +983,9 @@
     overlayKey = key;
     if (overlay) overlay.remove();
     const layers = [];
-    // Сначала широкие круги плавающего решения, поверх — фиксированного
+    // Сначала широкие круги объективного фикса, поверх — гарантированного
     // Зоны, а не круги: круги каждой зоны сливаются в одно ровное пятно без внутренних границ.
-    // Жёлтое — плавающее решение, зелёное поверх — фиксированное, без заливки — сеть не покрывает.
+    // Жёлтое — объективный фикс, зелёное поверх — гарантированный, без заливки — сеть не покрывает.
     if (!reach.float) {
       for (const [name, z] of [['reachFloat', 350], ['reachFix', 360], ['reachOver', 370]]) {
         const pane = map.createPane(name);
@@ -998,7 +1000,7 @@
     if (mine) {
       const [code, lat, lon, fix, float] = mine;
       if (SHOW.float) layers.push(L.circle([lat, lon], { radius: float * 1000, color: tone.float[0], weight: 1.6, opacity: 0.95, dashArray: '5 6', fillColor: tone.float[0], fillOpacity: 0.06, interactive: false, className: 'adm-reach-mine' }));
-      if (SHOW.fix) layers.push(L.circle([lat, lon], { radius: fix * 1000, color: tone.fix[0], weight: 1.8, opacity: 1, fillColor: tone.fix[0], fillOpacity: 0.16, interactive: false, className: 'adm-reach-mine' }).bindTooltip(`${esc(code)}: фикс до ${num(fix, 0)} км, плавающее до ${num(float, 0)} км`, { permanent: false }));
+      if (SHOW.fix) layers.push(L.circle([lat, lon], { radius: fix * 1000, color: tone.fix[0], weight: 1.8, opacity: 1, fillColor: tone.fix[0], fillOpacity: 0.16, interactive: false, className: 'adm-reach-mine' }).bindTooltip(`${esc(code)}: гарантированный фикс до ${num(fix, 0)} км, объективный до ${num(float, 0)} км`, { permanent: false }));
     }
     for (const [name, k] of [['reachFloat', 'float'], ['reachFix', 'fix'], ['reachOver', 'over']]) {
       map.getPane(name).style.opacity = tone[k][1];

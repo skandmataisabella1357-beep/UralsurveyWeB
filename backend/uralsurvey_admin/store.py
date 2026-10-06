@@ -1243,6 +1243,7 @@ class Store:
         out["stations"] = [codes[i] for i in row["station_ids"] if i in codes]
         out["reference"] = codes.get(row["reference_station_id"])
         out["networks"] = [{"id": n["id"], "name": n["name"], "kind": n["kind"], "version": n["version"]} for n in nets if n["subnet_id"] == row["id"]]
+        out["reach"] = reach(out.pop("iono_day", None), row["results"])
         mine = [d for d in days if d["subnet_id"] == row["id"]]
         out["ppp_mean"] = {"days": sorted({d["day"].isoformat() for d in mine}), "stations": ppp_mean(mine)}
         return out
@@ -1656,11 +1657,17 @@ class Store:
         if not isinstance(results, dict) or len(dumps(results)) > 400_000:
             return False
         with self.db.transaction() as conn:
-            row = conn.execute("SELECT calc_state, calc_started_at FROM subnets WHERE id = %s FOR UPDATE", (subnet_id,)).fetchone()
+            row = conn.execute("SELECT calc_state, calc_started_at, iono_day FROM subnets WHERE id = %s FOR UPDATE", (subnet_id,)).fetchone()
             if row is None or row["calc_state"] != "running" or row["calc_started_at"].isoformat() != started_at:
                 return False
-            conn.execute("UPDATE subnets SET results = %s, results_at = now(), calc_state = %s WHERE id = %s",
-                         (Jsonb(results), "stopped" if final else "running", subnet_id))
+            # Ионосфера копится за сутки: отметка не чаще раза в десять минут
+            now = dt.datetime.now(dt.timezone.utc)
+            day = [p for p in row["iono_day"] or [] if now - dt.datetime.fromisoformat(p[0]) < dt.timedelta(hours=24)]
+            ppm = (results.get("network") or {}).get("iono_ppm")
+            if isinstance(ppm, (int, float)) and ppm > 0 and (not day or now - dt.datetime.fromisoformat(day[-1][0]) >= dt.timedelta(minutes=10)):
+                day.append([now.isoformat(), float(ppm)])
+            conn.execute("UPDATE subnets SET results = %s, results_at = now(), calc_state = %s, iono_day = %s WHERE id = %s",
+                         (Jsonb(results), "stopped" if final else "running", Jsonb(day), subnet_id))
         return True
 
     # ---------- Журнал обрывов связи ----------
@@ -1755,6 +1762,29 @@ class Store:
             lines.append(";".join([cell(r["client_name"]), cell(r["tariff_name"]), r["starts_on"], r["ends_on"], names[r["state"]],
                                    "да" if r["paid"] else "нет", str(r["logins_limit"])]))
         return "﻿" + "\r\n".join(lines) + "\r\n"
+
+
+REACH_SURE_MM = 75  # расхождение ионосферы с базой, до которого фикс приходит быстро и уверенно
+REACH_REAL_MM = 150  # до которого двухчастотный ровер фикс получает, но ждёт дольше
+
+
+def reach(day: list | None, results: dict | None) -> dict | None:
+    """Зоны покрытия вокруг станций подсети. Гарантированный фикс — по худшей ионосфере за
+    последние сутки: радиус, который выдержит любое время дня. Объективный — по ионосфере
+    сейчас: где ровер получает фикс на деле. Числа — оценка, роверами не проверена."""
+    now = ((results or {}).get("network") or {}).get("iono_ppm")
+    marks = [float(p[1]) for p in day or []]
+    if not isinstance(now, (int, float)) or now <= 0:
+        if not marks:
+            return None
+        now = marks[-1]
+    worst = max([*marks, float(now)])
+    sure = max(10.0, min(100.0, REACH_SURE_MM / worst))
+    real = max(sure, min(150.0, REACH_REAL_MM / float(now)))
+    hours = 0.0
+    if day:
+        hours = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(day[0][0])).total_seconds() / 3600
+    return {"now_ppm": round(float(now), 2), "worst_ppm": round(worst, 2), "hours": round(min(hours, 24.0), 1), "sure_km": round(sure, 1), "real_km": round(real, 1)}
 
 
 PPP_DAY_HOURS = 12  # сутки короче в среднее не идут
