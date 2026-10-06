@@ -80,4 +80,18 @@ function run({ pride, dir, code, obsFile, navFile, from, to, timeoutMs = 20 * 60
   });
 }
 
-module.exports = { available, parsePos, itrf2020to2014, decimalYear, run };
+// Суточный расчёт: какие сутки пора считать. Вчерашние — когда после их конца прошло отставание
+// продуктов. Посчитанные по продуктам реального времени (RTS) пересчитываются позже: к тому
+// времени выходят быстрые. task: { have: { 'ГГГГ-ММ-ДД': { products, at } }, tried: Map }.
+const DAY = 86400000;
+function dueDay(task, now, rules) {
+  const day = Math.floor(now / DAY) * DAY - DAY;
+  if (now < day + DAY + rules.pppDailyLagHours * 3600000) return null;
+  const had = task.have[new Date(day).toISOString().slice(0, 10)];
+  const tried = task.tried.get(day) || 0;
+  if (!had) return now - tried >= rules.pppRetryMs ? day : null;
+  const last = Math.max(tried, Date.parse(had.at) || 0);
+  return /RTS$/.test(had.products || '') && now - last >= rules.pppDailyRedoHours * 3600000 ? day : null;
+}
+
+module.exports = { available, parsePos, itrf2020to2014, decimalYear, dueDay, run };

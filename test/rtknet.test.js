@@ -207,3 +207,24 @@ test('PPP-AR: разбор ответа программы и перевод ITR
   assert.ok(Math.abs(d[0] - (-1.4 - 0.692)) < 0.01 && Math.abs(d[1] - (-0.9 - 1.176 - 1.284)) < 0.01 && Math.abs(d[2] - (1.4 + 2.352 - 2.239)) < 0.01, d.join(' '));
   assert.ok(Math.abs(ppp.decimalYear(Date.UTC(2026, 6, 2, 12)) - 2026.5) < 0.001);
 });
+
+test('суточный PPP-AR: какие сутки пора считать', () => {
+  const ppp = require('../modules/rtknet/ppp');
+  const R = { pppDailyLagHours: 3, pppDailyRedoHours: 6, pppRetryMs: 20 * 60000 };
+  const H = 3600000;
+  const day = Date.UTC(2026, 9, 6);
+  const task = { have: {}, tried: new Map() };
+  // До конца суток плюс отставание продуктов считать рано
+  assert.equal(ppp.dueDay(task, day + 26 * H, R), null);
+  assert.equal(ppp.dueDay(task, day + 27 * H, R), day);
+  // Неудачная попытка повторяется не чаще, чем раз в двадцать минут
+  task.tried.set(day, day + 27 * H);
+  assert.equal(ppp.dueDay(task, day + 27 * H + 10 * 60000, R), null);
+  assert.equal(ppp.dueDay(task, day + 27 * H + 21 * 60000, R), day);
+  // Сутки по продуктам реального времени пересчитываются через шесть часов; по быстрым — нет
+  task.have['2026-10-06'] = { products: 'WUM0MGXRTS', at: new Date(day + 28 * H).toISOString() };
+  assert.equal(ppp.dueDay(task, day + 30 * H, R), null);
+  assert.equal(ppp.dueDay(task, day + 35 * H, R), day);
+  task.have['2026-10-06'].products = 'WUM0MGXRAP';
+  assert.equal(ppp.dueDay(task, day + 40 * H, R), null);
+});

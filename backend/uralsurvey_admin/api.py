@@ -109,7 +109,17 @@ class App:
             r("POST", r"/api/admin/subnets/(\d+)/ppp/stop", lambda q: (200, store.subnet_ppp(q.who, q.id, False)), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/stop", lambda q: (200, store.subnet_calc(q.who, q.id, False)), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/accept", lambda q: (200, store.subnet_accept(q.who, q.id, q.body.get("stations"))), "admin"),
-            r("POST", r"/api/admin/subnets/(\d+)/points", lambda q: (200, store.subnet_points(q.who, q.id)), "admin"),
+            r("GET", r"/api/admin/networks", lambda q: (200, store.list_networks()), "operator"),
+            r("POST", r"/api/admin/networks", lambda q: (201, store.network_create(q.who, q.body)), "admin"),
+            r("POST", r"/api/admin/networks/preview", lambda q: (200, store.network_preview(q.body)), "admin"),
+            r("PATCH", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_update(q.who, q.id, q.body)), "admin"),
+            r("DELETE", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_delete(q.who, q.id) or {}), "admin"),
+            r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id)), "admin"),
+            r("POST", r"/api/admin/networks/(\d+)/rollback", lambda q: (200, store.network_rollback(q.who, q.id, int(q.body.get("version") or 0))), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/ppp/daily", lambda q: (200, store.subnet_ppp_daily(q.who, q.id, bool(q.body.get("on")))), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/ppp/clear", lambda q: (200, store.subnet_ppp_clear(q.who, q.id)), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/ppp/accept", lambda q: (200, store.subnet_accept_ppp(q.who, q.id, q.body.get("stations"))), "admin"),
+            r("POST", r"/api/admin/subnets/(\d+)/link", lambda q: (200, store.subnet_link(q.who, q.id, q.body.get("stations"), str(q.body.get("mode") or "shift"))), "admin"),
 
             r("GET", r"/api/admin/clients", lambda q: (200, store.list_clients(q.arg("search"))), "operator"),
             r("POST", r"/api/admin/clients", lambda q: (201, store.save_client(q.who, q.body)), "admin"),
@@ -380,9 +390,11 @@ def make_handler(app: App):
                     store.close_stale_sessions(data["alive"])
                 return self.send_json(200, {"recorded": done})
             if path == "/internal/solver" and self.command == "GET":
-                return self.send_json(200, {"subnets": store.solver_tasks(), "ppp": store.solver_ppp_tasks()})
+                return self.send_json(200, {"subnets": store.solver_tasks(), "ppp": store.solver_ppp_tasks(), "pppDaily": store.solver_ppp_daily()})
             if path == "/internal/solver" and self.command == "POST":
                 data = self.body()
+                if data.get("kind") == "ppp-day":
+                    return self.send_json(200, {"stored": store.solver_ppp_day(int(data.get("id", 0)), str(data.get("day", "")), data.get("results"))})
                 if data.get("kind") == "ppp":
                     return self.send_json(200, {"stored": store.solver_ppp_results(int(data.get("id", 0)), str(data.get("startedAt", "")), data.get("results"), bool(data.get("final")))})
                 return self.send_json(200, {"stored": store.solver_results(int(data.get("id", 0)), str(data.get("startedAt", "")), data.get("results"), bool(data.get("final")))})

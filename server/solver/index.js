@@ -31,13 +31,16 @@ const HOUR = 3600000;
 const RULES = {
   pollMs: 3000, // как часто спрашивать задания
   cycleMs: 120000, // пауза между пересчётами непрерывного расчёта
-  keepHours: 48, // сколько последних часов наблюдений хранится
+  keepHours: 72, // сколько последних часов наблюдений хранится
   windowHours: 6, // сколько последних часов идёт в расчёт
   history: 6, // по стольким последним пересчётам считается разброс
   parallel: 4, // сколько векторов считается одновременно
   pppLagHours: 3, // PPP-AR считает наблюдения не моложе этого: продукты спутников выходят с отставанием
   pppMinHours: 2, // и не меньше стольких часов наблюдений
   pppRetryMs: 20 * 60 * 1000, // как часто повторять, пока продуктов нет
+  pppDailyLagHours: 3, // суточный PPP-AR: через сколько часов после конца суток считать их
+  pppDailyRedoHours: 6, // сутки, посчитанные по продуктам реального времени, пересчитываются: ждём быстрые
+  pppDailyMinHours: 6, // сутки с меньшим числом часов наблюдений не считаются
 };
 const WORDS = { fix: 'фиксированное', float: 'плавающее', none: 'нет решения' };
 
@@ -95,7 +98,8 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     const parts = hours.map((h) => fs.readFileSync(path.join(dir, `${h}.rtcm3`))).filter((b) => b.length);
     if (!parts.length) return null;
     let from = hours[0] * HOUR;
-    try { from = Math.max(from, fs.statSync(path.join(dir, `${hours[0]}.rtcm3`)).birthtimeMs || 0); } catch (err) { /* начало часа */ }
+    // Первый файл мог начаться посреди часа; время создания вне этого часа (файл скопирован) не годится
+    try { const born = fs.statSync(path.join(dir, `${hours[0]}.rtcm3`)).birthtimeMs || 0; if (born > from && born < from + HOUR) from = born; } catch (err) { /* начало часа */ }
     const head = parts[0][0] === 0xd3 && Object.keys(fcn).length ? glonass.hint(rtcm.frameStationId(parts[0]), fcn, from) : Buffer.alloc(0);
     fs.writeFileSync(target, Buffer.concat([head, ...parts]));
     return from;
@@ -355,6 +359,110 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
   const pride = process.env.URAL_PRIDE || path.join(dataDir, 'pride');
   const pppTasks = new Map(); // номер подсети -> задание
 
+  // Расчёт станций задания за отрезок одних суток [day, to]. Заполняет out.stations и out.epoch.
+  // Возвращает число решённых станций; −1 — считать нечего (нет наблюдений или эфемерид).
+  let pppBusy = 0;
+  async function pppSolve(task, day, to, minHours, out, P, say) {
+    pppBusy++;
+    try {
+      P.stage = 'Наблюдения станций';
+      say(P.stage);
+      const nav = await ephemeris.ensure(path.join(workDir, 'brdc'), day, day);
+      let fcn = {};
+      try { fcn = glonass.channels(fs.readFileSync(nav.files[0], 'latin1')); } catch (err) { /* без ГЛОНАСС */ }
+      const ready = [];
+      for (const code of task.stations) {
+        const file = path.join(task.dir, `${code}.rtcm3`);
+        const from = gather(code, file, fcn, [Math.floor(day / HOUR), Math.floor((to - 1) / HOUR)]);
+        const start = from ? Math.max(from, day) : null;
+        if (!start || to - start < minHours * HOUR) { out.stations[code] = { note: 'мало наблюдений, для которых уже есть продукты' }; continue; }
+        const obs = path.join(task.dir, `${code}.obs`);
+        const res = await rtklib.toRinex({ bin, rtcmFile: file, obsFile: obs, start, antenna: task.antennas[code] || '', interval: 30 });
+        if (res.ok) ready.push({ code, obs, start, approx: rtklib.approxPosition(obs) });
+        else out.stations[code] = { note: 'наблюдения не прочитаны' };
+      }
+      if (!ready.length || !nav.files.length) return -1;
+      P.stage = `PPP-AR: станций ${ready.length}`;
+      say(`${P.stage}, наблюдения до ${new Date(to).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+      const year = ppp.decimalYear((ready[0].start + to) / 2);
+      out.epoch = Number(year.toFixed(3));
+      let solved = 0;
+      for (let i = 0; i < ready.length && !task.closed; i += 3) {
+        await Promise.all(ready.slice(i, i + 3).map(async (st) => {
+          const res = await ppp.run({ pride, dir: path.join(task.dir, st.code), code: st.code, obsFile: st.obs, navFile: nav.files[0], from: st.start, to });
+          P.done++;
+          if (!res.sol) { out.stations[st.code] = { note: res.error }; say(`${st.code}: ${res.error}`); return; }
+          solved++;
+          const s = res.sol;
+          const old = ppp.itrf2020to2014(s.ecef, year);
+          out.stations[st.code] = {
+            x: Number(s.ecef[0].toFixed(4)), y: Number(s.ecef[1].toFixed(4)), z: Number(s.ecef[2].toFixed(4)),
+            x14: Number(old[0].toFixed(4)), y14: Number(old[1].toFixed(4)), z14: Number(old[2].toFixed(4)),
+            sd: s.sd.map((v) => Number(v.toFixed(4))), fixed: s.fixed, nobs: s.nobs, products: s.products,
+            hours: Number(((s.last - s.first) / HOUR).toFixed(1)),
+            shift: st.approx ? Number(Math.hypot(...old.map((v, k) => v - st.approx[k])).toFixed(4)) : null,
+          };
+          say(`${st.code}: ${s.fixed ? 'неоднозначности зафиксированы' : 'плавающее решение'}, ±${(Math.hypot(...s.sd) * 1000).toFixed(0)} мм, ${out.stations[st.code].hours} ч, продукты ${s.products}`);
+        }));
+      }
+      return solved;
+    } finally {
+      pppBusy--;
+    }
+  }
+
+  // ---------- Суточный PPP-AR: вчерашние сутки целиком, ответы копятся в управлении ----------
+
+  const DAY = 24 * HOUR;
+  const dailyTasks = new Map(); // номер подсети -> задание
+  const dayName = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+  async function dailyCycle(task) {
+    const now = Date.now();
+    const day = ppp.dueDay(task, now, R);
+    if (day === null || task.busy || task.closed || pppBusy || stopped || !ppp.available(pride)) return;
+    task.busy = true;
+    task.tried.set(day, now);
+    const P = { subnet: `${task.name} · сутки ${dayName(day)}`, startedAt: now, stage: '', done: 0, total: task.stations.length, lines: [], finished: false, tookMs: null };
+    progress.set(`ppp-${task.id}`, P);
+    const say = (text) => { P.lines.push({ at: Date.now(), text }); if (P.lines.length > 80) P.lines.shift(); };
+    try {
+      fs.rmSync(task.dir, { recursive: true, force: true });
+      fs.mkdirSync(task.dir, { recursive: true });
+      const out = { stations: {} };
+      const solved = await pppSolve(task, day, day + DAY, R.pppDailyMinHours, out, P, say);
+      P.finished = true;
+      P.tookMs = Date.now() - now;
+      if (solved > 0) {
+        if (!key) key = readKey();
+        const res = directoryUrl ? await request('POST', `${directoryUrl}/internal/solver`, key, { kind: 'ppp-day', id: task.id, day: dayName(day), results: out }, 10000) : { ok: true };
+        P.stage = `Сутки ${dayName(day)}: станций ${solved}, за ${Math.round(P.tookMs / 1000)} с${res.ok ? '' : ' — управление ответ не приняло'}`;
+        log(`расчёт: суточный PPP-AR ${task.name} за ${dayName(day)} — станций ${solved}`);
+      } else P.stage = solved < 0 ? `Сутки ${dayName(day)}: наблюдений нет` : `Сутки ${dayName(day)}: продукты спутников ещё не вышли, повторим`;
+      say(P.stage);
+    } catch (err) {
+      say(`Сбой расчёта: ${err.message}`);
+      log(`расчёт: суточный PPP-AR ${task.name} — сбой: ${err.message}`);
+    } finally {
+      task.busy = false;
+      fs.rm(task.dir, { recursive: true, force: true }, () => {});
+    }
+  }
+
+  function applyDaily(list) {
+    const seen = new Set();
+    for (const t of list) {
+      seen.add(t.id);
+      const task = dailyTasks.get(t.id) || { id: t.id, dir: path.join(workDir, `pppday-${t.id}`), tried: new Map(), busy: false, closed: false };
+      Object.assign(task, { name: t.name, stations: t.stations, antennas: t.antennas || {}, have: t.have || {} });
+      dailyTasks.set(t.id, task);
+    }
+    for (const [id, task] of dailyTasks) if (!seen.has(id)) { task.closed = true; dailyTasks.delete(id); }
+  }
+  // Подсети считаются по очереди: расчёт суток занимает процессор целиком
+  const dailyTimer = setInterval(async () => { for (const task of [...dailyTasks.values()]) await dailyCycle(task); }, 60000);
+  if (dailyTimer.unref) dailyTimer.unref();
+
   async function pppCycle(task) {
     if (task.closed || task.busy || stopped) return;
     task.busy = true;
@@ -377,52 +485,12 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
         out.note = 'На сервере не найдена программа PRIDE PPP-AR.';
         final = true;
       } else {
-        P.stage = 'Наблюдения станций';
-        say(P.stage);
-        const nav = await ephemeris.ensure(path.join(workDir, 'brdc'), day, day);
-        let fcn = {};
-        try { fcn = glonass.channels(fs.readFileSync(nav.files[0], 'latin1')); } catch (err) { /* без ГЛОНАСС */ }
-        const ready = [];
-        for (const code of task.stations) {
-          const file = path.join(task.dir, `${code}.rtcm3`);
-          const from = gather(code, file, fcn, [Math.floor(day / HOUR), Math.floor(to / HOUR)]);
-          const start = from ? Math.max(from, day) : null;
-          if (!start || to - start < R.pppMinHours * HOUR) { out.stations[code] = { note: 'мало наблюдений, для которых уже есть продукты' }; continue; }
-          const obs = path.join(task.dir, `${code}.obs`);
-          const res = await rtklib.toRinex({ bin, rtcmFile: file, obsFile: obs, start, antenna: task.antennas[code] || '', interval: 30 });
-          if (res.ok) ready.push({ code, obs, start, approx: rtklib.approxPosition(obs) });
-          else out.stations[code] = { note: 'наблюдения не прочитаны' };
-        }
-        if (!ready.length || !nav.files.length) {
+        const solved = await pppSolve(task, day, to, R.pppMinHours, out, P, say);
+        if (solved > 0) final = true;
+        else if (solved < 0) {
           out.note = `Ждём: PPP-AR считает наблюдения старше ${R.pppLagHours} ч (продукты спутников выходят с отставанием) и не короче ${R.pppMinHours} ч. Расчёт начнётся сам.`;
           say(out.note);
-        } else {
-          P.stage = `PPP-AR: станций ${ready.length}`;
-          say(`${P.stage}, наблюдения до ${new Date(to).toISOString().slice(11, 16)} UTC`);
-          const year = ppp.decimalYear((ready[0].start + to) / 2);
-          out.epoch = Number(year.toFixed(3));
-          let solved = 0;
-          for (let i = 0; i < ready.length && !task.closed; i += 3) {
-            await Promise.all(ready.slice(i, i + 3).map(async (st) => {
-              const res = await ppp.run({ pride, dir: path.join(task.dir, st.code), code: st.code, obsFile: st.obs, navFile: nav.files[0], from: st.start, to });
-              P.done++;
-              if (!res.sol) { out.stations[st.code] = { note: res.error }; say(`${st.code}: ${res.error}`); return; }
-              solved++;
-              const s = res.sol;
-              const old = ppp.itrf2020to2014(s.ecef, year);
-              out.stations[st.code] = {
-                x: Number(s.ecef[0].toFixed(4)), y: Number(s.ecef[1].toFixed(4)), z: Number(s.ecef[2].toFixed(4)),
-                x14: Number(old[0].toFixed(4)), y14: Number(old[1].toFixed(4)), z14: Number(old[2].toFixed(4)),
-                sd: s.sd.map((v) => Number(v.toFixed(4))), fixed: s.fixed, nobs: s.nobs, products: s.products,
-                hours: Number(((s.last - s.first) / HOUR).toFixed(1)),
-                shift: st.approx ? Number(Math.hypot(...old.map((v, k) => v - st.approx[k])).toFixed(4)) : null,
-              };
-              say(`${st.code}: ${s.fixed ? 'неоднозначности зафиксированы' : 'плавающее решение'}, ±${(Math.hypot(...s.sd) * 1000).toFixed(0)} мм, ${out.stations[st.code].hours} ч, продукты ${s.products}`);
-            }));
-          }
-          if (solved) final = true;
-          else { out.note = 'Продукты спутников на время наблюдений ещё не вышли. Расчёт повторится сам.'; say(out.note); }
-        }
+        } else { out.note = 'Продукты спутников на время наблюдений ещё не вышли. Расчёт повторится сам.'; say(out.note); }
       }
       out.tookMs = Date.now() - began;
       if (final) { P.finished = true; P.tookMs = out.tookMs; P.stage = `Готово за ${Math.round(out.tookMs / 1000)} с`; say(P.stage); } else P.stage = 'Ждём продукты спутников';
@@ -470,6 +538,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       // Управление недоступно — работаем по прежним заданиям: расчёт от этого не останавливается
       if (res.ok && Array.isArray(res.body.subnets)) applyTasks(res.body.subnets);
       if (res.ok && Array.isArray(res.body.ppp)) applyPpp(res.body.ppp);
+      if (res.ok && Array.isArray(res.body.pppDaily)) applyDaily(res.body.pppDaily);
     } finally {
       polling = false;
     }
@@ -511,6 +580,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     async stop() {
       stopped = true;
       clearInterval(pollTimer);
+      clearInterval(dailyTimer);
       bus.stop();
       for (const task of tasks.values()) closeTask(task);
       for (const rec of ring.values()) if (rec.out) rec.out.end();

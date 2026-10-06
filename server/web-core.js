@@ -41,7 +41,9 @@ try { site = JSON.parse(fs.readFileSync(path.join(DATA, 'server.json'), 'utf8'))
 const caster = { port: 2101, enabled: true };
 if (typeof site.ntripBind === 'string' && site.ntripBind) caster.publicBind = site.ntripBind;
 if (typeof site.ntripHost === 'string' && site.ntripHost) caster.publicHost = site.ntripHost;
-fs.writeFileSync(configFile, JSON.stringify({ bind: '127.0.0.1', caster, stations: [] }));
+// stationsBind — адрес, на котором порты приёма (2110–2159) ждут станции, которые шлют поток сами
+const ingest = typeof site.stationsBind === 'string' && site.stationsBind ? { publicBind: site.stationsBind } : {};
+fs.writeFileSync(configFile, JSON.stringify({ bind: '127.0.0.1', caster, ingest, stations: [] }));
 process.on('exit', () => { try { fs.unlinkSync(configFile); } catch (err) { /* уже убран */ } });
 
 const env = {

@@ -18,7 +18,7 @@ import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from . import security
+from . import helmert, security
 from .db import Database
 
 SESSION_HOURS = 12
@@ -145,6 +145,7 @@ FIELDS: dict[str, dict[str, Any]] = {
         "source_mountpoint": _text(64),
         "source_username": _text(64),
         "allow_addresses": _addresses,
+        "send_catalog": _bool,
         "x": _decimal(4, -7e6, 7e6),
         "y": _decimal(4, -7e6, 7e6),
         "z": _decimal(4, -7e6, 7e6),
@@ -220,7 +221,7 @@ REQUIRED = {
 
 TITLES = {
     "layers": "слой",
-    "subnets": "подсеть",
+    "subnets": "подсеть", "networks": "сеть раздачи",
     "stations": "станция", "mountpoints": "точка подключения", "clients": "клиент", "tariffs": "тариф",
     "subscriptions": "подписка", "ntrip_logins": "логин", "admins": "администратор",
 }
@@ -480,6 +481,8 @@ class Store:
             raise Problem("У источника NTRIP не указана точка подключения.")
         if mode == "sim" and row["x"] is None:
             raise Problem("Имитатору нужны координаты станции.")
+        if row["send_catalog"] and row["x"] is None:
+            raise Problem("Чтобы раздавать координаты из каталога, впишите X, Y и Z станции.")
 
     def list_stations(self) -> list[dict]:
         with self.db.connection() as conn:
@@ -630,6 +633,7 @@ class Store:
         with self.db.connection() as conn:
             rows = conn.execute(
                 "SELECT t.*, COALESCE((SELECT array_agg(tm.mountpoint_id ORDER BY tm.mountpoint_id) FROM tariff_mountpoints tm WHERE tm.tariff_id = t.id), '{}') AS mountpoint_ids, "
+                "COALESCE((SELECT array_agg(tn.network_id ORDER BY tn.network_id) FROM tariff_networks tn WHERE tn.tariff_id = t.id), '{}') AS network_ids, "
                 "(SELECT count(*) FROM subscriptions s WHERE s.tariff_id = t.id) AS subscriptions FROM tariffs t ORDER BY t.name").fetchall()
         return [_jsonable(r) for r in rows]
 
@@ -638,6 +642,9 @@ class Store:
         points = data.get("mountpoint_ids")
         if points is not None and (not isinstance(points, list) or not all(isinstance(p, int) and not isinstance(p, bool) for p in points)):
             raise Problem("Точки тарифа: список номеров точек подключения.")
+        nets = data.get("network_ids")
+        if nets is not None and (not isinstance(nets, list) or not all(isinstance(p, int) and not isinstance(p, bool) for p in nets)):
+            raise Problem("Сети тарифа: список номеров сетей раздачи.")
         with self.db.transaction() as conn:
             row = self._insert(conn, "tariffs", fields) if row_id is None else self._update(conn, "tariffs", row_id, fields)
             if points is not None:
@@ -647,6 +654,13 @@ class Store:
                         conn.execute("INSERT INTO tariff_mountpoints (tariff_id, mountpoint_id) VALUES (%s, %s)", (row["id"], p))
                 except psycopg.Error as exc:
                     raise Problem("В списке точек тарифа есть несуществующая точка подключения.") from exc
+            if nets is not None:
+                conn.execute("DELETE FROM tariff_networks WHERE tariff_id = %s", (row["id"],))
+                try:
+                    for n in sorted(set(nets)):
+                        conn.execute("INSERT INTO tariff_networks (tariff_id, network_id) VALUES (%s, %s)", (row["id"], n))
+                except psycopg.Error as exc:
+                    raise Problem("В списке сетей тарифа есть несуществующая сеть.") from exc
             self._audit(conn, who, "создан" if row_id is None else "изменён", "tariffs", row["id"], {"name": row["name"], "fields": sorted(fields)})
         return next(t for t in self.list_tariffs() if t["id"] == row["id"])
 
@@ -903,12 +917,13 @@ class Store:
             points = conn.execute("SELECT m.*, s.code AS station_code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE s.enabled ORDER BY m.name").fetchall()
             logins = conn.execute("SELECT * FROM ntrip_logins ORDER BY login").fetchall()
             subs = conn.execute("SELECT s.*, t.all_mountpoints, t.max_sessions AS tariff_sessions FROM subscriptions s JOIN tariffs t ON t.id = s.tariff_id").fetchall()
-            tariff_points = conn.execute("SELECT tm.tariff_id, m.name FROM tariff_mountpoints tm JOIN mountpoints m ON m.id = tm.mountpoint_id").fetchall()
+            tariff_points = conn.execute("SELECT tm.tariff_id, m.name FROM tariff_mountpoints tm JOIN mountpoints m ON m.id = tm.mountpoint_id "
+                                         "UNION SELECT tn.tariff_id, m.name FROM tariff_networks tn JOIN mountpoints m ON m.network_id = tn.network_id").fetchall()
             lost = self._setting(conn, "station_lost_seconds")
             # Области работы логинов: контуры слоёв, назначенных хотя бы одному логину
             areas = {r["id"]: [f["points"] for f in r["features"] if f.get("kind") == "polygon"]
                      for r in conn.execute("SELECT id, features FROM layers WHERE id IN (SELECT area_layer_id FROM ntrip_logins WHERE area_layer_id IS NOT NULL)")}
-            accepted = {r["id"]: r["accepted"] for r in conn.execute("SELECT id, accepted FROM subnets")}
+            released = {r["id"]: (r["release"] or {}).get("stations") or {} for r in conn.execute("SELECT id, release FROM networks")}
         today = dt.date.today()
         by_tariff: dict[int, list[str]] = {}
         for tp in tariff_points:
@@ -947,12 +962,15 @@ class Store:
                     entry["expires"] = dt.datetime.combine(r["ends"] + dt.timedelta(days=1), dt.time(0), dt.timezone(dt.timedelta(hours=5))).isoformat()
             users[row["login"]] = entry
 
-        # Точка подсети раздаёт поток станции с координатами базы, принятыми в подсети.
-        # Пока координаты не приняты, такой точки для раздачи нет: чужие координаты она не выдаст.
+        # Точка сети раздачи отдаёт поток станции с координатами базы из действующего выпуска сети.
+        # Станции нет в выпуске — такой точки для раздачи нет: чужие координаты она не выдаст.
+        catalog = {s["code"]: [float(s["x"]), float(s["y"]), float(s["z"])] for s in stations if s["send_catalog"] and s["x"] is not None}
+
         def own_position(p: dict):
-            if p["subnet_id"] is None:
-                return None
-            got = (accepted.get(p["subnet_id"]) or {}).get(p["station_code"])
+            if p["network_id"] is None:
+                # Обычная точка: поток как пришёл, если станции не велено раздавать координаты из каталога
+                return catalog.get(p["station_code"])
+            got = released.get(p["network_id"], {}).get(p["station_code"])
             return [float(got["x"]), float(got["y"]), float(got["z"])] if got else None
 
         def station_source(s: dict) -> dict:
@@ -974,7 +992,7 @@ class Store:
                           "antennaType": s["antenna_type"], "receiverType": s["receiver_type"]} for s in stations],
             "mountpoints": [{"name": p["name"], "station": p["station_code"], "stationId": p["rtcm_station_id"], "listed": p["listed"],
                              "enabled": p["enabled"], "access": staff_logins if p["access"] == "staff" else None,
-                             "position": own_position(p)} for p in points if p["subnet_id"] is None or own_position(p)],
+                             "position": own_position(p)} for p in points if p["network_id"] is None or own_position(p)],
             "users": users,
             "rules": {"stationLostMs": lost * 1000},
         }
@@ -1219,20 +1237,22 @@ class Store:
                 out[key] = _decimal(4, -7e6, 7e6)(data[key], key)
         return out
 
-    def _subnet_view(self, row: dict, codes: dict[int, str], points: list[dict]) -> dict:
+    def _subnet_view(self, row: dict, codes: dict[int, str], nets: list[dict], days: list[dict]) -> dict:
         out = _jsonable(row)
         out["stations"] = [codes[i] for i in row["station_ids"] if i in codes]
         out["reference"] = codes.get(row["reference_station_id"])
-        out["mountpoints"] = [{"id": p["id"], "name": p["name"], "station": codes.get(p["station_id"]), "enabled": p["enabled"]}
-                              for p in points if p["subnet_id"] == row["id"]]
+        out["networks"] = [{"id": n["id"], "name": n["name"], "kind": n["kind"], "version": n["version"]} for n in nets if n["subnet_id"] == row["id"]]
+        mine = [d for d in days if d["subnet_id"] == row["id"]]
+        out["ppp_mean"] = {"days": sorted({d["day"].isoformat() for d in mine}), "stations": ppp_mean(mine)}
         return out
 
     def list_subnets(self) -> list[dict]:
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets ORDER BY name").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
-            points = conn.execute("SELECT id, name, station_id, subnet_id, enabled FROM mountpoints WHERE subnet_id IS NOT NULL ORDER BY name").fetchall()
-        return [self._subnet_view(r, codes, points) for r in rows]
+            nets = conn.execute("SELECT id, name, kind, version, subnet_id FROM networks ORDER BY name").fetchall()
+            days = conn.execute("SELECT * FROM subnet_ppp_days ORDER BY day").fetchall()
+        return [self._subnet_view(r, codes, nets, days) for r in rows]
 
     def _subnet(self, conn, subnet_id: int, lock: bool = False) -> dict:
         row = conn.execute("SELECT * FROM subnets WHERE id = %s" + (" FOR UPDATE" if lock else ""), (subnet_id,)).fetchone()
@@ -1242,8 +1262,9 @@ class Store:
 
     def _subnet_out(self, conn, row: dict) -> dict:
         codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
-        points = conn.execute("SELECT id, name, station_id, subnet_id, enabled FROM mountpoints WHERE subnet_id = %s ORDER BY name", (row["id"],)).fetchall()
-        return self._subnet_view(row, codes, points)
+        nets = conn.execute("SELECT id, name, kind, version, subnet_id FROM networks WHERE subnet_id = %s ORDER BY name", (row["id"],)).fetchall()
+        days = conn.execute("SELECT * FROM subnet_ppp_days WHERE subnet_id = %s ORDER BY day", (row["id"],)).fetchall()
+        return self._subnet_view(row, codes, nets, days)
 
     def save_subnet(self, who: dict, data: dict, row_id: int | None = None) -> dict:
         fields = self._subnet_fields(data, partial=row_id is not None)
@@ -1314,24 +1335,235 @@ class Store:
                         {"name": row["name"], "stations": sorted(done), "quality": {c: accepted[c].get("quality") for c in sorted(done)}})
             return self._subnet_out(conn, row)
 
-    def subnet_points(self, who: dict, row_id: int) -> dict:
-        """Завести точки подключения подсети: по одной на станцию с принятыми координатами.
-        Точка доступна только по тарифу, где она названа: подсеть выдаётся клиенту отдельно."""
+    # ---------- Сети раздачи: выпуск согласованных координат подсети ----------
+
+    def _network_build(self, conn, subnet: dict, kind: str) -> dict:
+        """Что вошло бы в выпуск сейчас: координаты станций подсети — как есть (itrf) или
+        пересчитанные привязкой в систему основной сети (local)."""
+        accepted = subnet["accepted"] or {}
+        link = subnet["link"] or {}
+        if not accepted:
+            raise Problem("В подсети нет принятых координат: выпускать нечего. Примите координаты на шаге «PPP-AR» или «Расчёт».")
+        if kind == "local" and not link.get("params"):
+            raise Problem("Сначала рассчитайте привязку к основной сети: без неё координаты «как основная сеть» не получить.")
+        known = {r["code"] for r in conn.execute("SELECT code FROM stations WHERE id = ANY(%s)", (subnet["station_ids"],))}
+        stations = {}
+        for code in sorted(accepted):
+            if code not in known:
+                continue
+            src = [float(accepted[code][k]) for k in "xyz"]
+            x, y, z = (round(v, 4) for v in (helmert.apply(link["params"], src) if kind == "local" else src))
+            stations[code] = {"x": x, "y": y, "z": z, "src": src}
+        if not stations:
+            raise Problem("Станций с принятыми координатами в подсети нет.")
+        out = {"kind": kind, "subnet": subnet["name"], "stations": stations}
+        if kind == "local":
+            out.update(params=link["params"], mode=link.get("mode", "full"), used=link.get("used", []))
+        return out
+
+    @staticmethod
+    def _network_diff(new: dict, old: dict) -> dict:
+        """Чем новый выпуск отличается от действующего: сдвиг каждой станции, новые и ушедшие."""
+        was = (old or {}).get("stations") or {}
+        shifts = {c: round(math.dist([s["x"], s["y"], s["z"]], [was[c]["x"], was[c]["y"], was[c]["z"]]), 4) for c, s in new["stations"].items() if c in was}
+        worst = max(shifts, key=shifts.get) if shifts else None
+        return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
+                "max_shift": shifts[worst] if worst else None, "max_station": worst}
+
+    def _network_view(self, conn, row: dict) -> dict:
+        out = _jsonable(row)
+        out["points"] = [{"id": p["id"], "name": p["name"], "station": p["code"], "enabled": p["enabled"]} for p in conn.execute(
+            "SELECT m.id, m.name, m.enabled, s.code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE m.network_id = %s ORDER BY m.name", (row["id"],))]
+        sub = conn.execute("SELECT name FROM subnets WHERE id = %s", (row["subnet_id"],)).fetchone() if row["subnet_id"] else None
+        out["subnet"] = sub["name"] if sub else None
+        out["history"] = [{"version": h["version"], "at": h["created_at"].isoformat(), "by": (h["release"] or {}).get("by", ""), "stations": len((h["release"] or {}).get("stations") or {})}
+                          for h in conn.execute("SELECT version, created_at, release FROM network_releases WHERE network_id = %s ORDER BY version DESC LIMIT 20", (row["id"],))]
+        return out
+
+    def list_networks(self) -> list[dict]:
+        with self.db.connection() as conn:
+            return [self._network_view(conn, r) for r in conn.execute("SELECT * FROM networks ORDER BY name").fetchall()]
+
+    def _network(self, conn, network_id: int, lock: bool = False) -> dict:
+        row = conn.execute("SELECT * FROM networks WHERE id = %s" + (" FOR UPDATE" if lock else ""), (network_id,)).fetchone()
+        if row is None:
+            raise Problem(f"Нет такой сети раздачи: №{network_id}.", 404)
+        return row
+
+    def network_preview(self, data: dict) -> dict:
+        """Что изменится при выпуске: для новой сети (subnet_id, kind) или для следующей версии (network_id)."""
+        with self.db.connection() as conn:
+            net = self._network(conn, int(data["network_id"])) if data.get("network_id") else None
+            subnet_id = net["subnet_id"] if net else data.get("subnet_id")
+            if not isinstance(subnet_id, int):
+                raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего." if net else "Укажите подсеть.")
+            kind = net["kind"] if net else str(data.get("kind") or "")
+            if kind not in ("local", "itrf"):
+                raise Problem("Вид сети: local или itrf.")
+            new = self._network_build(conn, self._subnet(conn, subnet_id), kind)
+            return {"stations": len(new["stations"]), **self._network_diff(new, net["release"] if net else {})}
+
+    def _network_store(self, conn, who: dict, net: dict, release: dict, action: str) -> dict:
+        """Записать выпуск: новая версия, история, точки подключения по станциям выпуска."""
+        version = net["version"] + 1
+        release = {**release, "version": version, "at": dt.datetime.now(dt.timezone.utc).isoformat(), "by": who.get("login", "")}
+        diff = self._network_diff(release, net["release"])
+        row = self._update(conn, "networks", net["id"], {"version": version, "release": Jsonb(release), "updated_at": dt.datetime.now(dt.timezone.utc)})
+        conn.execute("INSERT INTO network_releases (network_id, version, release) VALUES (%s, %s, %s)", (net["id"], version, Jsonb(release)))
+        stations = {r["code"]: r["id"] for r in conn.execute("SELECT id, code FROM stations WHERE code = ANY(%s)", (list(release["stations"]),))}
+        have = {r["station_id"] for r in conn.execute("SELECT station_id FROM mountpoints WHERE network_id = %s", (net["id"],))}
+        conn.execute("DELETE FROM mountpoints WHERE network_id = %s AND station_id <> ALL(%s)", (net["id"], list(stations.values())))
+        for code, station_id in sorted(stations.items()):
+            if station_id not in have:
+                self._insert(conn, "mountpoints", {"name": f"{net['name']}_{code}"[:32], "station_id": station_id, "network_id": net["id"], "access": "tariff",
+                                                   "note": f"сеть {net['name']}: согласованные координаты базы"})
+        self._audit(conn, who, action, "networks", net["id"], {"name": net["name"], "version": version, "stations": len(release["stations"]),
+                                                               "max_shift": diff["max_shift"], "added": diff["added"], "gone": diff["gone"]})
+        return self._network_view(conn, row)
+
+    def network_create(self, who: dict, data: dict) -> dict:
+        """Выпустить новую сеть раздачи из подсети: имя, вид и первый снимок координат."""
+        if not isinstance(data, dict):
+            raise Problem("Запрос должен быть набором полей.")
+        name = str(data.get("name") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
+            raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
+        kind = str(data.get("kind") or "")
+        if kind not in ("local", "itrf"):
+            raise Problem("Вид сети: local или itrf.")
+        if not isinstance(data.get("subnet_id"), int):
+            raise Problem("Укажите подсеть, из которой выпускается сеть.")
+        with self.db.transaction() as conn:
+            subnet = self._subnet(conn, data["subnet_id"], lock=True)
+            release = self._network_build(conn, subnet, kind)
+            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"], "kind": kind})
+            return self._network_store(conn, who, net, release, "сеть выпущена")
+
+    def network_release(self, who: dict, network_id: int) -> dict:
+        """Новая версия сети: свежий снимок координат из её подсети. До этого сеть раздаёт прежние."""
+        with self.db.transaction() as conn:
+            net = self._network(conn, network_id, lock=True)
+            if net["subnet_id"] is None:
+                raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего.")
+            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True), net["kind"])
+            diff = self._network_diff(release, net["release"])
+            if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()):
+                raise Problem("Изменений нет: координаты в подсети те же, что в действующей версии сети.")
+            return self._network_store(conn, who, net, release, "выпущена новая версия сети")
+
+    def network_rollback(self, who: dict, network_id: int, version: int) -> dict:
+        """Вернуть прежний выпуск: он становится новой версией, история не теряется."""
+        with self.db.transaction() as conn:
+            net = self._network(conn, network_id, lock=True)
+            old = conn.execute("SELECT release FROM network_releases WHERE network_id = %s AND version = %s", (network_id, version)).fetchone()
+            if old is None or version == net["version"]:
+                raise Problem("Нет такой прежней версии сети.")
+            release = {k: v for k, v in old["release"].items() if k not in ("version", "at", "by")}
+            return self._network_store(conn, who, net, {**release, "restored": version}, "возвращена прежняя версия сети")
+
+    def network_update(self, who: dict, network_id: int, data: dict) -> dict:
+        with self.db.transaction() as conn:
+            self._network(conn, network_id, lock=True)
+            row = self._update(conn, "networks", network_id, {"title": str(data.get("title") or "").strip()[:80]})
+            self._audit(conn, who, "изменена", "networks", network_id, {"name": row["name"]})
+            return self._network_view(conn, row)
+
+    def network_delete(self, who: dict, network_id: int) -> None:
+        with self.db.transaction() as conn:
+            row = self._delete(conn, "networks", network_id)
+            self._audit(conn, who, "удалена", "networks", network_id, {"name": row["name"]})
+
+    def subnet_ppp_daily(self, who: dict, row_id: int, on: bool) -> dict:
+        """Включить или выключить суточный PPP-AR: каждые сутки считаются заново и копятся."""
         with self.db.transaction() as conn:
             row = self._subnet(conn, row_id, lock=True)
-            stations = {r["code"]: r["id"] for r in conn.execute("SELECT id, code FROM stations WHERE id = ANY(%s)", (row["station_ids"],))}
-            have = {r["station_id"] for r in conn.execute("SELECT station_id FROM mountpoints WHERE subnet_id = %s", (row_id,))}
-            added = []
-            for code in sorted(row["accepted"] or {}):
-                if code not in stations or stations[code] in have:
+            if on and not row["station_ids"]:
+                raise Problem("В подсети нет станций.")
+            row = self._update(conn, "subnets", row_id, {"ppp_daily": bool(on)})
+            self._audit(conn, who, "суточный PPP-AR включён" if on else "суточный PPP-AR выключен", "subnets", row_id, {"name": row["name"]})
+            return self._subnet_out(conn, row)
+
+    def subnet_ppp_clear(self, who: dict, row_id: int) -> dict:
+        """Стереть накопленные суточные расчёты: например, после переноса антенны."""
+        with self.db.transaction() as conn:
+            row = self._subnet(conn, row_id, lock=True)
+            gone = conn.execute("DELETE FROM subnet_ppp_days WHERE subnet_id = %s", (row_id,)).rowcount
+            self._audit(conn, who, "суточные расчёты PPP-AR стёрты", "subnets", row_id, {"name": row["name"], "rows": gone})
+            return self._subnet_out(conn, row)
+
+    def subnet_accept_ppp(self, who: dict, row_id: int, codes: list | None = None) -> dict:
+        """Принять координаты подсети из PPP-AR (ITRF2014): среднее по суточным расчётам,
+        а пока их нет — последний разовый расчёт. Принятые координаты сами не меняются."""
+        with self.db.transaction() as conn:
+            row = self._subnet(conn, row_id, lock=True)
+            days = conn.execute("SELECT * FROM subnet_ppp_days WHERE subnet_id = %s ORDER BY day", (row_id,)).fetchall()
+            got = ppp_mean(days)
+            if not got:
+                res = row["ppp_results"] or {}
+                got = {code: {"x": r["x14"], "y": r["y14"], "z": r["z14"], "n": 0, "spread": None, "epoch": res.get("epoch"),
+                              "sd": math.sqrt(sum(float(v) ** 2 for v in r.get("sd") or [0]))}
+                       for code, r in (res.get("stations") or {}).items() if isinstance(r, dict) and r.get("x14") is not None}
+            accepted = dict(row["accepted"] or {})
+            now = dt.datetime.now(dt.timezone.utc).isoformat()
+            done = []
+            for code, r in got.items():
+                if codes is not None and code not in codes:
                     continue
-                name = f"{row['name']}_{code}"[:32]
-                self._insert(conn, "mountpoints", {"name": name, "station_id": stations[code], "subnet_id": row_id, "access": "tariff",
-                                                   "note": f"подсеть {row['name']}: координаты базы из расчёта подсети"})
-                added.append(name)
-            if not added:
-                raise Problem("Новых точек нет: точки заводятся для станций с принятыми координатами, и у этих они уже есть.")
-            self._audit(conn, who, "созданы точки подсети", "subnets", row_id, {"name": row["name"], "points": added})
+                self._check_position({"x": r["x"], "y": r["y"], "z": r["z"]})
+                accepted[code] = {"x": r["x"], "y": r["y"], "z": r["z"], "quality": "ppp", "days": r["n"], "spread": r["spread"], "epoch": r["epoch"],
+                                  "sd": r.get("sd"), "at": now, "by": who.get("login", ""), "frame": "ITRF2014"}
+                done.append(code)
+            if not done:
+                raise Problem("Принимать нечего: расчётов PPP-AR по станциям пока нет.")
+            row = self._update(conn, "subnets", row_id, {"accepted": Jsonb(accepted), "accepted_at": dt.datetime.now(dt.timezone.utc), "accepted_by": who.get("login", "")})
+            self._audit(conn, who, "приняты координаты PPP-AR", "subnets", row_id,
+                        {"name": row["name"], "stations": sorted(done), "days": max(accepted[c]["days"] for c in done)})
+            return self._subnet_out(conn, row)
+
+    def subnet_link(self, who: dict, row_id: int, codes: list | None = None, mode: str = "shift") -> dict:
+        """Привязка подсети к основной сети: параметры перехода от принятых координат подсети
+        к координатам станций из каталога. mode: shift — только общий сдвиг (повороты и масштаб
+        нулевые), full — все семь параметров. codes — по каким станциям считать; без списка
+        берётся самая большая группа станций, у которых сдвиг между сетями совпадает в
+        пределах 5 см; остальные считаются несогласованными."""
+        if mode not in ("shift", "full"):
+            raise Problem("Вид привязки: shift или full.")
+        least = 3 if mode == "shift" else 5
+        with self.db.transaction() as conn:
+            row = self._subnet(conn, row_id, lock=True)
+            catalog = {r["code"]: [float(r["x"]), float(r["y"]), float(r["z"])]
+                       for r in conn.execute("SELECT code, x, y, z FROM stations WHERE id = ANY(%s) AND x IS NOT NULL", (row["station_ids"],))}
+            accepted = row["accepted"] or {}
+            pairs = {c: ([float(a["x"]), float(a["y"]), float(a["z"])], catalog[c]) for c, a in accepted.items() if c in catalog}
+            missing = sorted(c for c in accepted if c not in catalog)
+            if len(pairs) < least:
+                raise Problem(f"Для привязки нужно не меньше {least} станций, у которых есть и принятые координаты подсети, "
+                              "и координаты основной сети в каталоге. Примите координаты и запомните координаты основной сети.")
+            try:
+                if codes is None:
+                    # Самая большая группа станций с одинаковым сдвигом (в пределах 5 см): согласованных
+                    # может быть меньше половины, поэтому ищется группа, а не середина по всем
+                    shifts = {c: [d - s for s, d in zip(*p)] for c, p in pairs.items()}
+                    group = max(([c for c, v in shifts.items() if math.dist(v, seed) <= 0.05] for seed in shifts.values()), key=len)
+                    mean = [sum(shifts[c][i] for c in group) / len(group) for i in range(3)]
+                    used = [c for c, v in shifts.items() if math.dist(v, mean) <= 0.05]
+                else:
+                    used = [c for c in pairs if c in codes]
+                if len(used) < least:
+                    raise Problem(f"Согласованных станций меньше {least}: параметры по ним не определить. Отметьте станции сами.")
+                params = helmert.fit([pairs[c] for c in used], mode == "shift")
+            except ValueError as exc:
+                raise Problem(f"Привязка не посчитана: {exc}.") from None
+            resid = {}
+            for code, (src, dst) in pairs.items():
+                e, n, u = helmert.enu(dst, [d - v for d, v in zip(dst, helmert.apply(params, src))])
+                resid[code] = {"e": round(e, 4), "n": round(n, 4), "u": round(u, 4), "used": code in used}
+            plan = math.sqrt(sum(resid[c]["e"] ** 2 + resid[c]["n"] ** 2 for c in used) / len(used))
+            height = math.sqrt(sum(resid[c]["u"] ** 2 for c in used) / len(used))
+            link = {"params": params, "mode": mode, "used": sorted(used), "residuals": resid, "missing": missing, "rms_plan": round(plan, 4), "rms_height": round(height, 4),
+                    "at": dt.datetime.now(dt.timezone.utc).isoformat(), "by": who.get("login", "")}
+            row = self._update(conn, "subnets", row_id, {"link": Jsonb(link)})
+            self._audit(conn, who, "рассчитана привязка к основной сети", "subnets", row_id, {"name": row["name"], "stations": sorted(used), "params": params})
             return self._subnet_out(conn, row)
 
     def subnet_ppp(self, who: dict, row_id: int, run: bool) -> dict:
@@ -1365,6 +1597,44 @@ class Store:
                 return False
             conn.execute("UPDATE subnets SET ppp_results = %s, ppp_results_at = now(), ppp_state = %s WHERE id = %s",
                          (Jsonb(results), "stopped" if final else "running", subnet_id))
+        return True
+
+    def solver_ppp_daily(self) -> list[dict]:
+        """Подсети с суточным PPP-AR и какие сутки у них уже посчитаны (и по каким продуктам)."""
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT * FROM subnets WHERE ppp_daily ORDER BY id").fetchall()
+            codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
+            antennas = {r["code"]: r["antenna_type"].strip() for r in conn.execute("SELECT code, antenna_type FROM stations WHERE btrim(antenna_type) <> ''")}
+            have: dict[int, dict] = {}
+            for d in conn.execute("SELECT subnet_id, day, min(products) AS products, max(created_at) AS at FROM subnet_ppp_days "
+                                  "WHERE day > current_date - 7 GROUP BY subnet_id, day"):
+                have.setdefault(d["subnet_id"], {})[d["day"].isoformat()] = {"products": d["products"], "at": d["at"].isoformat()}
+        return [{"id": r["id"], "name": r["name"], "stations": [codes[i] for i in r["station_ids"] if i in codes], "have": have.get(r["id"], {}),
+                 "antennas": {codes[i]: antennas[codes[i]] for i in r["station_ids"] if codes.get(i) in antennas}} for r in rows]
+
+    def solver_ppp_day(self, subnet_id: int, day: str, results: dict) -> bool:
+        """Суточный расчёт PPP-AR от службы расчёта: по строке на станцию, повтор заменяет прежний."""
+        if not isinstance(results, dict) or len(dumps(results)) > 400_000:
+            return False
+        try:
+            date = dt.date.fromisoformat(day)
+        except ValueError:
+            return False
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT ppp_daily FROM subnets WHERE id = %s FOR UPDATE", (subnet_id,)).fetchone()
+            if row is None or not row["ppp_daily"]:
+                return False
+            for code, r in (results.get("stations") or {}).items():
+                if not isinstance(r, dict) or r.get("x14") is None or not re.fullmatch(CODE, str(code)):
+                    continue
+                sd = math.sqrt(sum(float(v) ** 2 for v in r.get("sd") or [0]))
+                conn.execute(
+                    "INSERT INTO subnet_ppp_days (subnet_id, day, code, x, y, z, x14, y14, z14, sd, fixed, hours, products, epoch) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (subnet_id, day, code) DO UPDATE SET "
+                    "x = EXCLUDED.x, y = EXCLUDED.y, z = EXCLUDED.z, x14 = EXCLUDED.x14, y14 = EXCLUDED.y14, z14 = EXCLUDED.z14, sd = EXCLUDED.sd, "
+                    "fixed = EXCLUDED.fixed, hours = EXCLUDED.hours, products = EXCLUDED.products, epoch = EXCLUDED.epoch, created_at = now()",
+                    (subnet_id, date, code, r["x"], r["y"], r["z"], r["x14"], r["y14"], r["z14"], sd, bool(r.get("fixed")), float(r.get("hours") or 0),
+                     str(r.get("products") or "")[:40], results.get("epoch")))
         return True
 
     def solver_tasks(self) -> list[dict]:
@@ -1405,6 +1675,37 @@ class Store:
             lines.append(";".join([cell(r["client_name"]), cell(r["tariff_name"]), r["starts_on"], r["ends_on"], names[r["state"]],
                                    "да" if r["paid"] else "нет", str(r["logins_limit"])]))
         return "﻿" + "\r\n".join(lines) + "\r\n"
+
+
+PPP_DAY_HOURS = 12  # сутки короче в среднее не идут
+
+
+def ppp_mean(days: list[dict]) -> dict:
+    """Среднее по суточным расчётам PPP-AR одной подсети: { КОД: {x, y, z (ITRF2014), n, spread, ...} }.
+    В среднее идут сутки не короче PPP_DAY_HOURS; при четырёх и больше сутках выбросы отсеиваются.
+    spread — средний квадратический разброс суток вокруг среднего, м: настоящая точность."""
+    by_code: dict[str, list[dict]] = {}
+    for d in days:
+        if float(d["hours"]) >= PPP_DAY_HOURS:
+            by_code.setdefault(d["code"], []).append(d)
+    out = {}
+    for code, rows in by_code.items():
+        pts = [[float(r["x14"]), float(r["y14"]), float(r["z14"])] for r in rows]
+        keep = list(range(len(pts)))
+        if len(pts) >= 4:
+            mid = [sorted(p[i] for p in pts)[len(pts) // 2] for i in range(3)]
+            dev = [math.dist(p, mid) for p in pts]
+            limit = max(0.03, 3 * sorted(dev)[len(dev) // 2])
+            keep = [i for i in keep if dev[i] <= limit]
+        mean = [sum(pts[i][k] for i in keep) / len(keep) for k in range(3)]
+        spread = math.sqrt(sum(math.dist(pts[i], mean) ** 2 for i in keep) / (len(keep) - 1)) if len(keep) > 1 else None
+        epochs = [float(rows[i]["epoch"]) for i in keep if rows[i]["epoch"] is not None]
+        out[code] = {"x": round(mean[0], 4), "y": round(mean[1], 4), "z": round(mean[2], 4), "n": len(keep), "dropped": len(pts) - len(keep),
+                     "spread": None if spread is None else round(spread, 4), "epoch": round(sum(epochs) / len(epochs), 3) if epochs else None,
+                     "fixed": sum(1 for i in keep if rows[i]["fixed"]), "sd": round(sum(float(rows[i]["sd"] or 0) for i in keep) / len(keep), 4),
+                     "first": rows[keep[0]]["day"].isoformat(), "last": rows[keep[-1]]["day"].isoformat(),
+                     "products": sorted({rows[i]["products"] for i in keep})}
+    return out
 
 
 def dumps(value: Any) -> bytes:
