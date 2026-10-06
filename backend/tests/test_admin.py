@@ -523,13 +523,13 @@ class AdminTest(unittest.TestCase):
         self.assertIsNone(sub["reach"])
         from uralsurvey_admin.store import reach
         hour_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=5)).isoformat()
-        self.assertEqual(reach([[hour_ago, 3.0]], {"network": {"iono_ppm": 1.5}}), {"now_ppm": 1.5, "worst_ppm": 3.0, "hours": 5.0, "sure_km": 25.0, "real_km": 100.0})
+        self.assertEqual(reach([[hour_ago, 3.0]], {"network": {"iono_ppm": 1.5}}), {"now_ppm": 1.5, "worst_ppm": 3.0, "hours": 5.0, "sure_km": 50.0, "real_km": 100.0})
         self.assertEqual(reach([], {"network": {"iono_ppm": 3.0}})["real_km"], 50.0)
         status, sub, _ = a.call("POST", base + "/compute", {})
         task = a.call("GET", "/internal/solver", headers=key)[1]["subnets"][0]
         self.assertEqual(a.call("POST", "/internal/solver", {"id": sub["id"], "startedAt": task["startedAt"], "results": {**results, "network": {"iono_ppm": 2.5}}, "final": True}, key)[1], {"stored": True})
         sub = next(s for s in a.call("GET", "/api/admin/subnets")[1] if s["id"] == sub["id"])
-        self.assertEqual((sub["reach"]["sure_km"], sub["reach"]["real_km"], "iono_day" in sub), (30.0, 60.0, False))
+        self.assertEqual((sub["reach"]["sure_km"], sub["reach"]["real_km"], "iono_day" in sub), (60.0, 60.0, False))
         self.assertEqual(a.call("GET", "/internal/solver", headers=key)[1]["subnets"], [])
         actions = [r["action"] for r in a.call("GET", "/api/admin/audit?entity=subnets")[1]["items"]]
         for action in ("создана", "расчёт начат", "вычисление текущих координат", "приняты координаты", "расчёт остановлен"):

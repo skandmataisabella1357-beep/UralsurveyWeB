@@ -1764,14 +1764,13 @@ class Store:
         return "﻿" + "\r\n".join(lines) + "\r\n"
 
 
-REACH_SURE_MM = 75  # расхождение ионосферы с базой, до которого фикс приходит быстро и уверенно
-REACH_REAL_MM = 150  # до которого двухчастотный ровер фикс получает, но ждёт дольше
+REACH_MM = 150  # расхождение ионосферы с базой, до которого двухчастотный ровер получает фикс
 
 
 def reach(day: list | None, results: dict | None) -> dict | None:
-    """Зоны покрытия вокруг станций подсети. Гарантированный фикс — по худшей ионосфере за
-    последние сутки: радиус, который выдержит любое время дня. Объективный — по ионосфере
-    сейчас: где ровер получает фикс на деле. Числа — оценка, роверами не проверена."""
+    """Зоны покрытия вокруг станций подсети. Порог один, отличается только час: гарантированный
+    фикс — по худшей ионосфере за последние сутки (фикс есть в любое время дня), объективный —
+    по ионосфере сейчас. Числа — оценка, роверами не проверена."""
     now = ((results or {}).get("network") or {}).get("iono_ppm")
     marks = [float(p[1]) for p in day or []]
     if not isinstance(now, (int, float)) or now <= 0:
@@ -1779,8 +1778,8 @@ def reach(day: list | None, results: dict | None) -> dict | None:
             return None
         now = marks[-1]
     worst = max([*marks, float(now)])
-    sure = max(10.0, min(100.0, REACH_SURE_MM / worst))
-    real = max(sure, min(150.0, REACH_REAL_MM / float(now)))
+    sure = max(10.0, min(150.0, REACH_MM / worst))
+    real = max(sure, min(150.0, REACH_MM / float(now)))
     hours = 0.0
     if day:
         hours = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(day[0][0])).total_seconds() / 3600
