@@ -841,6 +841,28 @@ class Store:
             rows = conn.execute(f"SELECT * FROM sessions WHERE {cond} ORDER BY started_at DESC, id DESC LIMIT %s OFFSET %s", [*args, limit, offset]).fetchall()
         return {"total": total, "items": [_jsonable(r) for r in rows]}
 
+    def fix_stats(self, days: int = 30) -> dict:
+        """Как быстро роверы получают фикс: по сеансам за последние дни, с разбивкой по расстоянию
+        до базы. В счёт идут сеансы, где ровер сообщал положение хотя бы минуту."""
+        days = max(1, min(int(days or 30), 365))
+        bins = [(0, 10), (10, 20), (20, 30), (30, 50), (50, 10 ** 6)]
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT fix FROM sessions WHERE started_at > now() - make_interval(days => %s) AND fix <> '{}'", (days,)).fetchall()
+        out = []
+        for low, high in bins:
+            got = [r["fix"] for r in rows if r["fix"].get("km") is not None and low <= r["fix"]["km"] < high
+                   and r["fix"].get("fixed", 0) + r["fix"].get("float", 0) + r["fix"].get("other", 0) >= 60]
+            ttf = sorted(f["ttf"] for f in got if f.get("ttf") is not None)
+            total = sum(f.get("fixed", 0) + f.get("float", 0) + f.get("other", 0) for f in got)
+            fixed = sum(f.get("fixed", 0) for f in got)
+            ages = [f["age"] for f in got if f.get("age") is not None]
+            out.append({"from": low, "to": None if high > 1000 else high, "sessions": len(got), "with_fix": len(ttf),
+                        "ttf_median": ttf[len(ttf) // 2] if ttf else None, "ttf_worst": ttf[-1] if ttf else None,
+                        "fixed_share": round(fixed / total, 4) if total else None,
+                        "lost_per_hour": round(sum(f.get("lost", 0) for f in got) / (fixed / 3600), 2) if fixed >= 600 else None,
+                        "age": round(sum(ages) / len(ages), 1) if ages else None})
+        return {"days": days, "sessions": sum(b["sessions"] for b in out), "bins": out}
+
     def list_refusals(self, login: str = "", limit: int = 200, offset: int = 0) -> dict:
         limit = _int(1, 1000)(limit, "limit")
         offset = _int(0, 10**9)(offset, "offset")
@@ -923,7 +945,8 @@ class Store:
             # Области работы логинов: контуры слоёв, назначенных хотя бы одному логину
             areas = {r["id"]: [f["points"] for f in r["features"] if f.get("kind") == "polygon"]
                      for r in conn.execute("SELECT id, features FROM layers WHERE id IN (SELECT area_layer_id FROM ntrip_logins WHERE area_layer_id IS NOT NULL)")}
-            net_rows = conn.execute("SELECT id, release, port FROM networks").fetchall()
+            net_rows = conn.execute("SELECT id, name, release, port FROM networks ORDER BY name").fetchall()
+            tariff_nets = conn.execute("SELECT tariff_id, network_id FROM tariff_networks").fetchall()
             releases = {r["id"]: r["release"] or {} for r in net_rows}
             net_ports = {r["id"]: r["port"] for r in net_rows}
             released = {i: r.get("stations") or {} for i, r in releases.items()}
@@ -933,6 +956,28 @@ class Store:
             by_tariff.setdefault(tp["tariff_id"], []).append(tp["name"])
         open_points = [p["name"] for p in points if p["access"] == "all"]
         all_points = [p["name"] for p in points]
+        # Точки «ближайшая база»: NEAR — по открытым точкам основной сети (по одной на станцию),
+        # ИМЯСЕТИ_NEAR — по точкам сети раздачи. Имя, занятое обычной точкой, не используется.
+        taken = set(all_points)
+        auto: list[dict] = []
+        main: dict[str, str] = {}
+        for p in points:
+            if p["network_id"] is None and p["access"] == "all" and p["enabled"] and p["listed"]:
+                main.setdefault(p["station_code"], p["name"])
+        if len(main) > 1 and NEAR not in taken:
+            auto.append({"name": NEAR, "points": sorted(main.values()), "port": None})
+            open_points.append(NEAR)
+        net_auto: dict[int, str] = {}
+        for n in net_rows:
+            own = [p["name"] for p in points if p["network_id"] == n["id"] and p["enabled"]]
+            name = f"{n['name']}_{NEAR}"
+            if len(own) > 1 and name not in taken and (n["release"] or {}).get("near", True):
+                auto.append({"name": name, "points": own, "port": n["port"]})
+                net_auto[n["id"]] = name
+        for tn in tariff_nets:
+            if tn["network_id"] in net_auto:
+                by_tariff.setdefault(tn["tariff_id"], []).append(net_auto[tn["network_id"]])
+        all_points += [a["name"] for a in auto]
         staff_logins = [row["login"] for row in logins if row["staff"] and row["active"]]
 
         # Права клиента — объединение всех его действующих подписок
@@ -990,10 +1035,12 @@ class Store:
 
         # Сеть «ITRF2014 и пересчёт»: точка отдаёт роверу ещё и сообщения 1021 и 1025
         def transform(p: dict):
-            rel = releases.get(p["network_id"]) or {}
-            if rel.get("kind") != "itrf_msk" or not rel.get("params"):
-                return None
-            return {"system": rel.get("system", "msk66"), "link": rel["params"], "area": rel.get("area")}
+            return (releases.get(p["network_id"]) or {}).get("transform")
+
+        # Отбор спутниковых систем и эпох: только если сеть отдаёт не всё
+        def shaping(p: dict):
+            f = (releases.get(p["network_id"]) or {}).get("filter")
+            return f if f and (len(f.get("systems") or NET_SYSTEMS) < len(NET_SYSTEMS) or int(f.get("rate") or 1) > 1) else None
 
         return {
             "stations": [{"code": s["code"], "name": s["name"] or s["code"], "source": station_source(s),
@@ -1002,8 +1049,9 @@ class Store:
                           "antennaType": s["antenna_type"], "receiverType": s["receiver_type"]} for s in stations],
             "mountpoints": [{"name": p["name"], "station": p["station_code"], "stationId": p["rtcm_station_id"], "listed": p["listed"],
                              "enabled": p["enabled"], "access": staff_logins if p["access"] == "staff" else None,
-                             "position": own_position(p), "transform": transform(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or own_position(p)],
+                             "position": own_position(p), "transform": transform(p), "filter": shaping(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or own_position(p)],
             "users": users,
+            "auto": auto,
             "rules": {"stationLostMs": lost * 1000},
         }
 
@@ -1028,12 +1076,14 @@ class Store:
                 elif kind in ("close", "update"):
                     pos = e.get("position") or {}
                     first = e.get("first") or {}
+                    fix = e.get("fix") if isinstance(e.get("fix"), dict) and len(dumps(e["fix"])) < 2000 else None
                     conn.execute(
                         "UPDATE sessions SET bytes = GREATEST(bytes, %s), last_lat = COALESCE(%s, last_lat), last_lon = COALESCE(%s, last_lon), "
                         "last_kind = COALESCE(NULLIF(%s, ''), last_kind), first_lat = COALESCE(first_lat, %s), first_lon = COALESCE(first_lon, %s), "
-                        "ended_at = CASE WHEN %s THEN %s ELSE ended_at END, end_reason = CASE WHEN %s THEN %s ELSE end_reason END WHERE caster_id = %s",
+                        "ended_at = CASE WHEN %s THEN %s ELSE ended_at END, end_reason = CASE WHEN %s THEN %s ELSE end_reason END, "
+                        "fix = COALESCE(%s, fix), station = COALESCE(NULLIF(%s, ''), station) WHERE caster_id = %s",
                         (int(e.get("bytes", 0)), pos.get("lat"), pos.get("lon"), str(pos.get("kind", "")), first.get("lat"), first.get("lon"),
-                         kind == "close", at, kind == "close", str(e.get("reason", ""))[:200], str(e["id"])))
+                         kind == "close", at, kind == "close", str(e.get("reason", ""))[:200], Jsonb(fix) if fix else None, str(e.get("station") or "")[:64], str(e["id"])))
                     if kind == "close":
                         conn.execute("UPDATE ntrip_logins SET last_seen_at = %s WHERE login = %s", (at, str(e.get("login", ""))))
                 elif kind == "refusal":
@@ -1349,45 +1399,105 @@ class Store:
 
     # ---------- Сети раздачи: выпуск согласованных координат подсети ----------
 
-    def _network_build(self, conn, subnet: dict, kind: str) -> dict:
-        """Что вошло бы в выпуск сейчас. local — координаты станций пересчитаны привязкой в систему
-        основной сети; itrf — координаты подсети как есть; itrf_msk — как есть, а привязка уходит
-        роверу сообщениями пересчёта в потоке."""
+    @staticmethod
+    def _recipe(data) -> dict:
+        """Рецепт сети — из чего она собрана. Принимается и прежняя запись одним словом (kind).
+        Проверяет блоки и их сочетания; недостающие блоки берутся по умолчанию."""
+        if isinstance(data, str):
+            data = {"local": {"coords": "net1"}, "itrf": {"coords": "itrf2014"}, "itrf_msk": {"coords": "itrf2014", "transform": "msk66"}}.get(data)
+        if not isinstance(data, dict):
+            raise Problem("Состав сети: набор блоков (координаты, пересчёт, станции, спутники, частота).")
+        coords = str(data.get("coords") or "itrf2014")
+        if coords not in NET_COORDS:
+            raise Problem("Координаты базы: ITRF2014, ITRF2020, как основная сеть или ГСК-2011.")
+        transform = str(data.get("transform") or "none")
+        if transform not in NET_TRANSFORMS:
+            raise Problem("Пересчёт в потоке: не передавать, МСК-66, СК-42 или ГСК-2011.")
+        if coords in ("net1", "gsk2011") and transform != "none":
+            raise Problem("Пересчёт в потоке возможен только при координатах базы в ITRF: координаты «как основная сеть» и ГСК-2011 уже пересчитаны, второй раз сдвигать нельзя.")
+        stations = data.get("stations")
+        if stations is not None:
+            if not isinstance(stations, list) or not stations or any(not isinstance(c, str) or not re.fullmatch(CODE, c) for c in stations):
+                raise Problem("Станции сети: список кодов станций, не пустой.")
+            stations = sorted(set(stations))
+        systems = data.get("systems") or list(NET_SYSTEMS)
+        if not isinstance(systems, list) or any(c not in NET_SYSTEMS for c in systems):
+            raise Problem("Спутниковые системы: G (GPS), R (ГЛОНАСС), E (Galileo), C (BeiDou).")
+        if "G" not in systems:
+            raise Problem("Без GPS сеть не выпустить: ровер без него не работает.")
+        try:
+            rate = int(data.get("rate") or 1)
+        except (TypeError, ValueError):
+            rate = 0
+        if rate not in NET_RATES:
+            raise Problem("Частота поправок: раз в 1, 2, 5 или 10 секунд.")
+        return {"coords": coords, "transform": transform, "stations": stations, "systems": [c for c in NET_SYSTEMS if c in systems], "rate": rate,
+                "near": bool(data.get("near", True))}
+
+    @staticmethod
+    def _recipe_kind(recipe: dict) -> str:
+        """Короткая метка для цвета в панели."""
+        return "local" if recipe["coords"] == "net1" else ("itrf_msk" if recipe["transform"] != "none" else "itrf")
+
+    def _network_build(self, conn, subnet: dict, recipe: dict) -> dict:
+        """Что вошло бы в выпуск сейчас по рецепту: координаты станций в выбранной системе,
+        параметры пересчёта для потока, отбор спутников и эпох."""
         accepted = subnet["accepted"] or {}
-        link = subnet["link"] or {}
+        link = (subnet["link"] or {}).get("params")
         if not accepted:
             raise Problem("В подсети нет принятых координат: выпускать нечего. Примите координаты на шаге «PPP-AR» или «Расчёт».")
-        if kind != "itrf" and not link.get("params"):
-            raise Problem("Сначала рассчитайте привязку подсети к основной сети: без неё пересчёт в МСК не из чего собрать.")
+        needs_link = recipe["coords"] == "net1" or recipe["transform"] in ("msk66", "sk42")
+        if needs_link and not link:
+            raise Problem("Сначала рассчитайте привязку подсети к основной сети: без неё координаты «как основная сеть» и пересчёт в МСК-66 или СК-42 не собрать.")
         known = {r["code"] for r in conn.execute("SELECT code FROM stations WHERE id = ANY(%s)", (subnet["station_ids"],))}
+        chosen = set(recipe["stations"]) if recipe["stations"] else None
+        epochs = [float(a["epoch"]) for a in accepted.values() if isinstance(a, dict) and a.get("epoch")]
+        today = dt.datetime.now(dt.timezone.utc)
+        start = dt.datetime(today.year, 1, 1, tzinfo=dt.timezone.utc)
+        epoch = round(sum(epochs) / len(epochs), 3) if epochs else round(today.year + (today - start) / (dt.datetime(today.year + 1, 1, 1, tzinfo=dt.timezone.utc) - start), 3)
         stations = {}
         for code in sorted(accepted):
-            if code not in known:
+            if code not in known or (chosen is not None and code not in chosen):
                 continue
             src = [float(accepted[code][k]) for k in "xyz"]
-            x, y, z = (round(v, 4) for v in (helmert.apply(link["params"], src) if kind == "local" else src))
+            if recipe["coords"] == "net1":
+                out_xyz = helmert.apply(link, src)
+            elif recipe["coords"] == "itrf2020":
+                out_xyz = helmert.to_itrf2020(src, epoch)
+            elif recipe["coords"] == "gsk2011":
+                out_xyz = helmert.to_gsk2011(src, epoch)
+            else:
+                out_xyz = src
+            x, y, z = (round(v, 4) for v in out_xyz)
             stations[code] = {"x": x, "y": y, "z": z, "src": src}
         if not stations:
-            raise Problem("Станций с принятыми координатами в подсети нет.")
-        epochs = [float(a["epoch"]) for a in accepted.values() if isinstance(a, dict) and a.get("epoch")]
-        out = {"kind": kind, "subnet": subnet["name"], "stations": stations, "epoch": round(sum(epochs) / len(epochs), 3) if epochs else None}
-        # Привязка запоминается в выпуске всегда, когда она есть: панель показывает её и у сети ITRF2014
-        if link.get("params"):
-            out.update(params=link["params"], mode=link.get("mode", "full"), used=link.get("used", []))
-        if kind == "itrf_msk":
-            out.update(system="msk66", area=helmert.area([s["src"] for s in stations.values()]))
+            raise Problem("Станций с принятыми координатами для этой сети нет: проверьте блок «Станции».")
+        out = {"kind": self._recipe_kind(recipe), "recipe": recipe, "subnet": subnet["name"], "stations": stations, "epoch": epoch,
+               "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"]}
+        # Привязка запоминается в выпуске всегда, когда она есть: панель показывает её у любой сети
+        if link:
+            sub = subnet["link"]
+            out.update(params=link, mode=sub.get("mode", "full"), used=sub.get("used", []))
+        if recipe["transform"] != "none":
+            # Координаты базы в ITRF2020 сначала приводятся к ITRF2014: это миллиметры, но честные
+            pre = helmert.from_itrf2020(epoch) if recipe["coords"] == "itrf2020" else {k: 0.0 for k in ("tx", "ty", "tz", "rx", "ry", "rz", "m")}
+            through = pre if recipe["transform"] == "gsk2011" else {k: round(float(link[k]) + pre[k], 6) for k in pre}
+            out["transform"] = {"target": recipe["transform"], "link": through, "epoch": epoch, "source": "ITRF2020" if recipe["coords"] == "itrf2020" else "ITRF2014",
+                                "area": helmert.area([s["src"] for s in stations.values()])}
         return out
 
     @staticmethod
     def _network_diff(new: dict, old: dict) -> dict:
-        """Чем новый выпуск отличается от действующего: сдвиг каждой станции, новые и ушедшие."""
+        """Чем новый выпуск отличается от действующего: сдвиг каждой станции, новые и ушедшие,
+        и изменился ли состав блоков или параметры пересчёта."""
         was = (old or {}).get("stations") or {}
         shifts = {c: round(math.dist([s["x"], s["y"], s["z"]], [was[c]["x"], was[c]["y"], was[c]["z"]]), 4) for c, s in new["stations"].items() if c in was}
         worst = max(shifts, key=shifts.get) if shifts else None
+        same = lambda key: (old or {}).get(key) == new.get(key)
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
                 "max_shift": shifts[worst] if worst else None, "max_station": worst,
-                # У сети с пересчётом в потоке координаты те же, а меняются параметры в сообщении 1021
-                "params_changed": bool(old) and new.get("kind") == "itrf_msk" and (old or {}).get("params") != new.get("params")}
+                # Координаты могут остаться теми же, а измениться — параметры пересчёта, спутники, частота
+                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near"))}
 
     def _network_view(self, conn, row: dict) -> dict:
         out = _jsonable(row)
@@ -1433,12 +1543,12 @@ class Store:
             subnet_id = net["subnet_id"] if net else data.get("subnet_id")
             if not isinstance(subnet_id, int):
                 raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего." if net else "Укажите подсеть.")
-            kind = net["kind"] if net else str(data.get("kind") or "")
-            if kind not in NET_KINDS:
-                raise Problem("Вид сети: local, itrf или itrf_msk.")
-            new = self._network_build(conn, self._subnet(conn, subnet_id), kind)
+            # Рецепт — из запроса; иначе действующий рецепт сети
+            recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else (data.get("kind") or (net["recipe"] or net["kind"] if net else None)))
+            new = self._network_build(conn, self._subnet(conn, subnet_id), recipe)
             # plan — что будет передаваться: по нему панель показывает параметры до выпуска
-            plan = {k: new.get(k) for k in ("kind", "params", "mode", "used", "epoch", "system", "area")}
+            plan = {k: new.get(k) for k in ("kind", "recipe", "params", "mode", "used", "epoch", "transform", "filter", "near")}
+            plan["codes"] = sorted(new["stations"])
             return {"stations": len(new["stations"]), "plan": plan, **self._network_diff(new, net["release"] if net else {})}
 
     def _network_store(self, conn, who: dict, net: dict, release: dict, action: str) -> dict:
@@ -1466,28 +1576,30 @@ class Store:
         name = str(data.get("name") or "").strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
             raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
-        kind = str(data.get("kind") or "")
-        if kind not in NET_KINDS:
-            raise Problem("Вид сети: local, itrf или itrf_msk.")
+        recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else data.get("kind"))
         if not isinstance(data.get("subnet_id"), int):
             raise Problem("Укажите подсеть, из которой выпускается сеть.")
         with self.db.transaction() as conn:
             subnet = self._subnet(conn, data["subnet_id"], lock=True)
-            release = self._network_build(conn, subnet, kind)
-            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"], "kind": kind,
+            release = self._network_build(conn, subnet, recipe)
+            net = self._insert(conn, "networks", {"name": name, "title": str(data.get("title") or "").strip()[:80], "subnet_id": subnet["id"],
+                                                  "kind": self._recipe_kind(recipe), "recipe": Jsonb(recipe),
                                                   "port": self._network_port(conn, data.get("port"))})
             return self._network_store(conn, who, net, release, "сеть выпущена")
 
-    def network_release(self, who: dict, network_id: int) -> dict:
-        """Новая версия сети: свежий снимок координат из её подсети. До этого сеть раздаёт прежние."""
+    def network_release(self, who: dict, network_id: int, recipe=None) -> dict:
+        """Новая версия сети: свежий снимок координат из её подсети, с прежним составом блоков
+        или с изменённым. До выпуска сеть раздаёт прежнее."""
         with self.db.transaction() as conn:
             net = self._network(conn, network_id, lock=True)
             if net["subnet_id"] is None:
                 raise Problem("Подсеть, из которой выпускалась эта сеть, удалена: новую версию выпустить не из чего.")
-            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True), net["kind"])
+            recipe = self._recipe(recipe if recipe is not None else (net["recipe"] or net["kind"]))
+            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True), recipe)
             diff = self._network_diff(release, net["release"])
             if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()) and not diff["params_changed"]:
-                raise Problem("Изменений нет: координаты в подсети те же, что в действующей версии сети.")
+                raise Problem("Изменений нет: координаты в подсети и состав сети те же, что в действующей версии.")
+            net = self._update(conn, "networks", network_id, {"recipe": Jsonb(recipe), "kind": self._recipe_kind(recipe)})
             return self._network_store(conn, who, net, release, "выпущена новая версия сети")
 
     def network_rollback(self, who: dict, network_id: int, version: int) -> dict:
@@ -1498,6 +1610,8 @@ class Store:
             if old is None or version == net["version"]:
                 raise Problem("Нет такой прежней версии сети.")
             release = {k: v for k, v in old["release"].items() if k not in ("version", "at", "by")}
+            if isinstance(release.get("recipe"), dict):
+                net = self._update(conn, "networks", network_id, {"recipe": Jsonb(release["recipe"]), "kind": self._recipe_kind(release["recipe"])})
             return self._network_store(conn, who, net, {**release, "restored": version}, "возвращена прежняя версия сети")
 
     def network_update(self, who: dict, network_id: int, data: dict) -> dict:
@@ -1626,7 +1740,9 @@ class Store:
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets WHERE ppp_state = 'running' ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
-            antennas = {r["code"]: r["antenna_type"].strip() for r in conn.execute("SELECT code, antenna_type FROM stations WHERE btrim(antenna_type) <> ''")}
+            # Тип антенны в каталоге — справка, в расчёт он не идёт: координаты сети заданы для
+            # фазовых центров, а с калибровкой антенны расчёт выдал бы точку её крепления
+            antennas: dict[str, str] = {}
         return [{"id": r["id"], "name": r["name"], "startedAt": r["ppp_started_at"].isoformat(), "stations": [codes[i] for i in r["station_ids"] if i in codes],
                  "antennas": {codes[i]: antennas[codes[i]] for i in r["station_ids"] if codes.get(i) in antennas}} for r in rows]
 
@@ -1648,7 +1764,9 @@ class Store:
         with self.db.connection() as conn:
             rows = conn.execute("SELECT * FROM subnets WHERE ppp_daily ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
-            antennas = {r["code"]: r["antenna_type"].strip() for r in conn.execute("SELECT code, antenna_type FROM stations WHERE btrim(antenna_type) <> ''")}
+            # Тип антенны в каталоге — справка, в расчёт он не идёт: координаты сети заданы для
+            # фазовых центров, а с калибровкой антенны расчёт выдал бы точку её крепления
+            antennas: dict[str, str] = {}
             have: dict[int, dict] = {}
             for d in conn.execute("SELECT subnet_id, day, min(products) AS products, max(created_at) AS at FROM subnet_ppp_days "
                                   "WHERE day > current_date - 7 GROUP BY subnet_id, day"):
@@ -1687,7 +1805,9 @@ class Store:
             rows = conn.execute("SELECT * FROM subnets WHERE calc_state = 'running' AND reference_station_id IS NOT NULL AND ref_x IS NOT NULL ORDER BY id").fetchall()
             codes = {r["id"]: r["code"] for r in conn.execute("SELECT id, code FROM stations")}
             # Типы антенн из каталога: с ними расчёт учитывает фазовые центры антенн станций
-            antennas = {r["code"]: r["antenna_type"].strip() for r in conn.execute("SELECT code, antenna_type FROM stations WHERE btrim(antenna_type) <> ''")}
+            # Тип антенны в каталоге — справка, в расчёт он не идёт: координаты сети заданы для
+            # фазовых центров, а с калибровкой антенны расчёт выдал бы точку её крепления
+            antennas: dict[str, str] = {}
         return [{"id": r["id"], "name": r["name"], "startedAt": r["calc_started_at"].isoformat(), "once": r["calc_once"],
                  "antennas": {codes[i]: antennas[codes[i]] for i in r["station_ids"] if codes.get(i) in antennas}, "reference": codes.get(r["reference_station_id"]),
                  "ecef": [float(r["ref_x"]), float(r["ref_y"]), float(r["ref_z"])],
@@ -1807,7 +1927,11 @@ class Store:
 
 
 NTRIP_PORT = 2101  # общий порт раздачи
-NET_KINDS = ("local", "itrf", "itrf_msk")  # как основная сеть; ITRF2014; ITRF2014 и пересчёт в потоке
+NEAR = "NEAR"  # точка «ближайшая база»: ровер сам попадает на ближайшую станцию по своему положению
+NET_COORDS = ("itrf2014", "itrf2020", "net1", "gsk2011")  # в чём координаты базы; net1 — как основная сеть
+NET_TRANSFORMS = ("none", "msk66", "sk42", "gsk2011")  # пересчёт в потоке сообщениями 1021 и 1025
+NET_SYSTEMS = ("G", "R", "E", "C")  # GPS, ГЛОНАСС, Galileo, BeiDou
+NET_RATES = (1, 2, 5, 10)  # секунд между эпохами
 REACH_MM = 150  # расхождение ионосферы с базой, до которого двухчастотный ровер получает фикс
 
 

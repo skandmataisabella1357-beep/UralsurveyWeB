@@ -17,6 +17,7 @@ const rtcm = require('../rtcm/messages');
 const ntrip = require('./ntrip');
 const { inside } = require('../../modules/layers/parse');
 const transform = require('../../modules/transform/transform');
+const shaping = require('../../modules/shaper/shaper');
 
 // Правила сеанса (ТЗ, раздел «Как пользователь работает с сервером»)
 const RULES = {
@@ -32,6 +33,8 @@ const RULES = {
   connectsPerMinute: 10, // подключений на логин
   areaGgaMs: 30000, // логин с областью работы обязан сообщить положение за это время
   transformMs: 10000, // как часто повторять роверу сообщения пересчёта координат (1021, 1025)
+  autoKeepKm: 3, // точка «ближайшая база»: ровер переходит на другую базу, только если она ближе
+  autoKeepShare: 0.15, // хотя бы на столько километров и на такую долю расстояния — иначе он метался бы на границе
 };
 
 // Что из потока станции идёт пользователю. Эфемериды и фирменные сообщения остаются внутри сервера.
@@ -114,6 +117,9 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         port,
         // Сообщения пересчёта: ровер сам получает местную систему из координат базы в ITRF2014
         transform: transformOf(p.transform),
+        // Состав потока: отбор спутниковых систем и прореживание эпох; null — всё как пришло
+        filterKey: shaping.needed(p.filter) ? JSON.stringify(p.filter) : '',
+        shaper: !shaping.needed(p.filter) ? null : (old && old.filterKey === JSON.stringify(p.filter) && old.shaper ? old.shaper : new shaping.Shaper(p.filter)),
         listed: p.listed !== false,
         enabled: p.enabled !== false,
         access: Array.isArray(p.access) ? p.access : null, // null — все логины с доступом
@@ -132,6 +138,99 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     }
   }
 
+  // ---------- Точки «ближайшая база» ----------
+  // Ровер подключается к одной точке на всю сеть, а сервер сам отдаёт ему поток ближайшей станции
+  // по положению из его сообщений GGA. Пока положения нет, сеанс ждёт в «прихожей» точки.
+
+  const autos = new Map(); // имя точки -> { name, points: [имена точек], port, lobby }
+  const idleFeed = () => ({ code: '', name: '', lastAt: Infinity, rate: 0, bytes: 0, rateBytes: 0, service: new Map(), types: new Map(), points: [], lat: NaN, lon: NaN });
+  function setAutos(list) {
+    const next = new Map();
+    for (const a of list || []) {
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(a.name || '') || points.has(a.name) || next.has(a.name) || !Array.isArray(a.points)) continue;
+      const old = autos.get(a.name);
+      const port = Number.isInteger(a.port) && a.port > 0 ? a.port : null;
+      const lobby = old && old.lobby.port === port ? old.lobby
+        : { name: a.name, lobby: true, feed: idleFeed(), stationId: null, position: null, positionFrame: null, transform: null, port, listed: true, enabled: true, access: null, sessions: new Set() };
+      if (old && old.lobby !== lobby) for (const session of [...sessions]) if (session.auto === old) close(session, 'точка подключения переведена на другой порт');
+      const auto = { name: a.name, points: a.points.filter((n) => typeof n === 'string'), port, lobby };
+      for (const session of sessions) if (session.auto === old) session.auto = auto;
+      next.set(a.name, auto);
+    }
+    for (const [name, old] of autos) if (!next.has(name)) for (const session of [...sessions]) if (session.auto === old) close(session, 'точка подключения удалена');
+    autos.clear();
+    for (const [name, auto] of next) autos.set(name, auto);
+  }
+
+  // Расстояние между двумя точками на поверхности, км
+  function kmBetween(a, b) {
+    const rad = Math.PI / 180;
+    const h = Math.sin((b.lat - a.lat) * rad / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin((b.lon - a.lon) * rad / 2) ** 2;
+    return 12742 * Math.asin(Math.sqrt(h));
+  }
+  const candidates = (auto, now) => auto.points.map((n) => points.get(n)).filter((p) => p && p.enabled && now - p.feed.lastAt <= R.stationLiveMs && Number.isFinite(p.feed.lat));
+
+  // Перевести сеанс на ближайшую базу. С работающей базы ровер уходит, только если другая заметно ближе.
+  function retarget(session) {
+    const g = session.gga;
+    if (!g || session.closed) return;
+    const list = candidates(session.auto, Date.now());
+    if (!list.length) return;
+    const far = (p) => kmBetween(g, p.feed);
+    const best = list.reduce((a, b) => (far(b) < far(a) ? b : a));
+    const cur = session.point;
+    if (best === cur) return;
+    if (list.includes(cur) && far(cur) - far(best) < Math.max(R.autoKeepKm, far(cur) * R.autoKeepShare)) return;
+    cur.sessions.delete(session);
+    best.sessions.add(session);
+    session.point = best;
+    session.fix.bases.push(best.feed.code);
+    if (session.fix.bases.length > 20) session.fix.bases.shift();
+    // Новая база представляется роверу: координаты, оборудование, задержки ГЛОНАСС
+    const service = [1005, 1006, 1007, 1008, 1033, 1230].filter((t) => !best.shaper || best.shaper.passes(t)).map((t) => best.feed.service.get(t)).filter(Boolean);
+    if (service.length) {
+      const plain = Buffer.concat(service.map((f) => adapt(best, f)));
+      send(session, plain, session.version === 2 ? ntrip.chunk(plain) : null);
+    }
+    sendTransform(session);
+  }
+
+  // ---------- Статистика фикса ----------
+  // Ровер в каждом GGA сообщает тип решения. По ним на сеанс считается: через сколько секунд после
+  // первого сообщения пришёл фикс, сколько времени он держался, сколько раз срывался, как далеко
+  // была база и какого возраста поправки. Это мерило для всего, что должно ускорять фикс.
+
+  const fixNew = () => ({ firstAt: 0, firstFixAt: 0, lost: 0, kind: '', at: 0, fixed: 0, float: 0, other: 0, ageSum: 0, ageN: 0, ageMax: 0, kmSum: 0, kmN: 0, kmFix: null, bases: [] });
+  function fixTake(session, g, now) {
+    const f = session.fix;
+    if (!f.firstAt) f.firstAt = now;
+    // Время между сообщениями идёт в счёт прежнего типа решения; долгий пропуск не считается
+    if (f.kind) {
+      const dt = Math.min(now - f.at, 10000) / 1000;
+      f[f.kind === 'fixed' ? 'fixed' : (f.kind === 'float' ? 'float' : 'other')] += dt;
+      if (f.kind === 'fixed' && g.kind !== 'fixed') f.lost++;
+    }
+    const base = session.point.feed;
+    const far = Number.isFinite(base.lat) ? kmBetween(g, base) : null;
+    if (far !== null) { f.kmSum += far; f.kmN++; }
+    if (g.kind === 'fixed' && !f.firstFixAt) { f.firstFixAt = now; f.kmFix = far; }
+    if (Number.isFinite(g.age)) { f.ageSum += g.age; f.ageN++; f.ageMax = Math.max(f.ageMax, g.age); }
+    f.kind = g.kind;
+    f.at = now;
+  }
+  const round1 = (v) => Math.round(v * 10) / 10;
+  function fixSummary(session) {
+    const f = session.fix;
+    if (!f.firstAt) return null;
+    return {
+      ttf: f.firstFixAt ? round1((f.firstFixAt - f.firstAt) / 1000) : null,
+      fixed: Math.round(f.fixed), float: Math.round(f.float), other: Math.round(f.other), lost: f.lost,
+      km: f.kmN ? round1(f.kmSum / f.kmN) : null, kmFix: f.kmFix === null ? null : round1(f.kmFix),
+      age: f.ageN ? round1(f.ageSum / f.ageN) : null, ageMax: f.ageN ? round1(f.ageMax) : null,
+      bases: f.bases.length ? f.bases : undefined,
+    };
+  }
+
   // ---------- Приём с шины и выдача ----------
 
   const sessions = new Set();
@@ -146,6 +245,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   };
   const where = (s) => (s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind } : null);
   setPoints(config.mountpoints || config.stations.map((st) => ({ name: st.code, station: st.code })), config.stations);
+  setAutos(config.auto);
 
   function close(session, reason) {
     if (session.closed) return;
@@ -154,7 +254,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     session.point.sessions.delete(session);
     sessions.delete(session);
     session.socket.destroy();
-    record({ t: 'close', id: session.id, login: session.login, bytes: session.bytes, reason, position: where(session), first: session.firstGga && { lat: session.firstGga.lat, lon: session.firstGga.lon } });
+    record({ t: 'close', id: session.id, login: session.login, bytes: session.bytes, reason, position: where(session), fix: fixSummary(session), station: session.point.feed.code, first: session.firstGga && { lat: session.firstGga.lat, lon: session.firstGga.lon } });
   }
 
   function send(session, plain, chunked) {
@@ -191,11 +291,11 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   }
 
   // Готовые кадры пересчёта для точки: на каждую зону — пара 1021 + 1025 с общим номером системы.
-  // t — { system, link, area } из справочника; без привязки пересчитывать нечем.
+  // t — { target, link, area, epoch, source } из справочника (прежняя запись — system вместо target)
   function transformOf(t) {
-    if (!t || !t.link) return null;
+    if (!t) return null;
     try {
-      const plan = transform.plan(t.link, t.system || 'msk66', t.area);
+      const plan = transform.plan({ ...t, target: t.target || t.system || 'msk66' });
       if (!plan) return null;
       const frames = new Map(plan.projections.map((z) => [z.zone, Buffer.concat([rtcm.encodeHelmert({ ...plan.helmert, systemId: z.systemId }), rtcm.encodeProjection(z)])]));
       return { plan, frames };
@@ -219,7 +319,10 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   // Кадры одной порции отдаются одной записью на сеанс; для версии 2 обёртка строится один раз на точку
   function deliver(point, frames) {
     if (!point.sessions.size) return;
-    const list = point.stationId !== null || point.position ? frames.map((f) => adapt(point, f)) : frames;
+    // Отбор систем и эпох идёт первым: эпоха копится до последнего сообщения и уходит целиком
+    const shaped = point.shaper ? frames.flatMap((f) => point.shaper.push(f)) : frames;
+    if (!shaped.length) return;
+    const list = point.stationId !== null || point.position ? shaped.map((f) => adapt(point, f)) : shaped;
     const plain = list.length === 1 ? list[0] : Buffer.concat(list);
     let chunked = null;
     for (const session of point.sessions) {
@@ -285,6 +388,13 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const quiet = now - Math.max(point.feed.lastAt, 0);
       if (quiet > R.stationLostMs) for (const s of [...point.sessions]) close(s, 'станция не на связи');
     }
+    for (const s of [...sessions]) {
+      if (!s.auto) continue;
+      if (s.point.lobby) {
+        if (s.gga) retarget(s);
+        if (s.point.lobby && now - s.startedAt > R.areaGgaMs) close(s, s.gga ? 'ни одна база сети не на связи' : 'ровер не сообщил своё положение: без него ближайшую базу не выбрать');
+      } else if (now - s.point.feed.lastAt > R.stationLiveMs) retarget(s);
+    }
     // Логин с областью работы обязан сообщать положение: иначе ограничение обходится молчанием
     for (const s of [...sessions]) if (s.area && !s.gga && now - s.startedAt > R.areaGgaMs) close(s, 'ровер не сообщил своё положение, а для логина задана область работы');
     for (const [key, list] of connects) if (!list.some((t) => now - t < 60000)) connects.delete(key);
@@ -342,6 +452,16 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         bitrate: Math.round(feed.rate * 8 / 100) * 100,
       });
     }
+    for (const auto of autos.values()) {
+      const live = onPort(auto.lobby, port) ? candidates(auto, now) : [];
+      if (!live.length) continue;
+      const feed = live[0].feed;
+      list.push({
+        name: auto.name, city: 'Nearest base', needsGga: true, receiver: feed.receiver, lat: 0, lon: 0,
+        messages: [...feed.types.entries()].sort((a, b) => a[0] - b[0]).map(([type, t]) => ({ type, period: Math.max(1, Math.round(t.period / 1000)) })),
+        bitrate: Math.round(feed.rate * 8 / 100) * 100,
+      });
+    }
     return ntrip.sourcetable({ host: cfg.publicHost || publicBind, port, points: list });
   }
   // Точка видна на своём порту; без своего порта — на общем
@@ -355,7 +475,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       socket.end(ntrip.sourcetableResponse(req.version, liveTable(port)));
       return;
     }
-    const point = points.get(req.path);
+    const auto = points.has(req.path) ? null : autos.get(req.path);
+    const point = auto ? auto.lobby : points.get(req.path);
     if (!point || !point.enabled || !onPort(point, port)) {
       refusals.push({ at: now, login: req.user || null, point: req.path, code: 404, reason: 'такой точки нет' });
       record({ t: 'refusal', login: req.user || '', point: req.path, code: 404, reason: 'такой точки нет', address: ip });
@@ -404,20 +525,23 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
 
     const feed = point.feed;
     if (now - feed.lastAt > R.stationLiveMs) return refuse(socket, req, 503, 'станция не на связи', login);
+    if (auto && !candidates(auto, now).length) return refuse(socket, req, 503, 'ни одна база сети не на связи', login);
 
     const session = {
       id: `${bootId}-${++seq}`, socket, login, point, ip, version: req.version, agent: req.agent,
       startedAt: now, bytes: 0, gga: null, ggaAt: 0, firstGga: null, closed: false, endReason: null, text: '', area,
+      // auto — сеанс точки «ближайшая база»; entry — имя точки, к которой ровер подключился
+      auto, entry: point.name, fix: fixNew(),
     };
     socket.setNoDelay(true); // кадр уходит сразу, без склейки пакетов
     socket.setKeepAlive(true, 30000);
     socket.setTimeout(0);
     socket.write(ntrip.streamHead(req.version));
     // Сначала координаты базы, оборудование и задержки ГЛОНАСС, затем наблюдения
-    const service = [1005, 1006, 1007, 1008, 1033, 1230].map((t) => feed.service.get(t)).filter(Boolean);
+    const service = [1005, 1006, 1007, 1008, 1033, 1230].filter((t) => !point.shaper || point.shaper.passes(t)).map((t) => feed.service.get(t)).filter(Boolean);
     sessions.add(session);
     point.sessions.add(session);
-    record({ t: 'open', id: session.id, login, point: point.name, station: feed.code, address: ip, agent: req.agent, version: req.version });
+    record({ t: 'open', id: session.id, login, point: session.entry, station: feed.code, address: ip, agent: req.agent, version: req.version });
     if (service.length) {
       const list = service.map((f) => adapt(point, f));
       const plain = Buffer.concat(list);
@@ -431,6 +555,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       session.gga = g;
       session.ggaAt = Date.now();
       if (!session.firstGga) session.firstGga = g;
+      if (session.auto) retarget(session);
+      fixTake(session, g, session.ggaAt);
       // Ровер вышел из своей области работы — сеанс закрывается
       if (session.area && !inside(g.lat, g.lon, session.area)) close(session, 'ровер вне разрешённой области работы');
     };
@@ -471,6 +597,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       users = dir.users;
       if (dir.rules && Number.isFinite(dir.rules.stationLostMs)) R.stationLostMs = dir.rules.stationLostMs;
       setPoints(dir.mountpoints, dir.stations);
+      setAutos(dir.auto);
       if (portsReady) syncPorts();
       log(`раздача: справочник из базы — точек ${dir.mountpoints.length}, логинов ${Object.keys(dir.users).length}`);
     } catch (err) {
@@ -483,7 +610,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     try {
       // Раз в несколько секунд — объём и положение открытых сеансов, чтобы журнал не отставал
       const batch = journal.splice(0, 2000);
-      for (const s of sessions) batch.push({ t: 'update', id: s.id, at: Date.now(), bytes: s.bytes, position: where(s), first: s.firstGga && { lat: s.firstGga.lat, lon: s.firstGga.lon } });
+      for (const s of sessions) batch.push({ t: 'update', id: s.id, at: Date.now(), bytes: s.bytes, position: where(s), fix: fixSummary(s), station: s.point.feed.code, first: s.firstGga && { lat: s.firstGga.lat, lon: s.firstGga.lon } });
       const ok = await directory.send(batch, [...sessions].map((s) => s.id));
       // Управление недоступно: события не теряем, отправим в следующий раз
       if (!ok) journal.unshift(...batch.filter((e) => e.t !== 'update'));
@@ -554,7 +681,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   const extra = new Map(); // порт -> слушатель
   function syncPorts() {
     if (!cfg.enabled) return;
-    const wanted = new Set([...points.values()].map((p) => p.port).filter((p) => p && p !== actualPort));
+    const wanted = new Set([...points.values(), ...autos.values()].map((p) => p.port).filter((p) => p && p !== actualPort));
     for (const [port, srv] of extra) {
       if (wanted.has(port)) continue;
       extra.delete(port);
@@ -591,14 +718,15 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         sessions: sessions.size,
         feeds: [...feeds.values()].map((f) => ({ station: f.code, name: f.name, bytes: f.bytes, lastDataAgeMs: f.lastAt ? now - f.lastAt : null })),
         points: [...points.values()].map((p) => ({
-          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed, ownPosition: Boolean(p.position), transform: Boolean(p.transform), port: p.port || actualPort,
+          name: p.name, station: p.feed.code, enabled: p.enabled, listed: p.listed, ownPosition: Boolean(p.position), transform: Boolean(p.transform), shaped: Boolean(p.shaper), port: p.port || actualPort,
           live: now - p.feed.lastAt <= R.stationLiveMs, sessions: p.sessions.size,
         })),
         clients: [...sessions].map((s) => ({
-          id: s.id, login: s.login, point: s.point.name, version: s.version, agent: s.agent, address: s.ip,
+          id: s.id, login: s.login, point: s.point.name, entry: s.entry, version: s.version, agent: s.agent, address: s.ip, fix: fixSummary(s),
           startedAt: s.startedAt, bytes: s.bytes, queued: s.socket.writableLength,
           position: s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind, sats: s.gga.sats, age: s.gga.age, at: s.ggaAt } : null,
         })),
+        autos: [...autos.values()].map((a) => ({ name: a.name, port: a.port || actualPort, bases: candidates(a, now).length, of: a.points.length, waiting: a.lobby.sessions.size })),
         refusals: refusals.slice(-50),
         directory: directory ? { url: directoryUrl, lastOkAgeMs: directory.lastOkAt ? now - directory.lastOkAt : null, pending: journal.length } : null,
       };

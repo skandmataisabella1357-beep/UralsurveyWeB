@@ -116,7 +116,7 @@ class App:
             r("POST", r"/api/admin/networks/preview", lambda q: (200, store.network_preview(q.body)), "admin"),
             r("PATCH", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_update(q.who, q.id, q.body)), "admin"),
             r("DELETE", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_delete(q.who, q.id) or {}), "admin"),
-            r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id)), "admin"),
+            r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id, q.body.get("recipe"))), "admin"),
             r("POST", r"/api/admin/networks/(\d+)/rollback", lambda q: (200, store.network_rollback(q.who, q.id, int(q.body.get("version") or 0))), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/ppp/daily", lambda q: (200, store.subnet_ppp_daily(q.who, q.id, bool(q.body.get("on")))), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/ppp/clear", lambda q: (200, store.subnet_ppp_clear(q.who, q.id)), "admin"),
@@ -154,6 +154,7 @@ class App:
             r("GET", r"/api/admin/sessions", lambda q: (200, store.list_sessions(
                 q.arg("login"), q.arg("mountpoint"), q.arg("from"), q.arg("to"), q.arg("open") == "1", q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "operator"),
             r("POST", r"/api/admin/sessions/close", self.close_session, "operator"),
+            r("GET", r"/api/admin/fix-stats", lambda q: (200, store.fix_stats(q.int_arg("days") or 30)), "operator"),
             r("GET", r"/api/admin/outages", lambda q: (200, store.list_outages(q.int_arg("hours") or 24)), "operator"),
             r("GET", r"/api/admin/refusals", lambda q: (200, store.list_refusals(q.arg("login"), q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "operator"),
             r("GET", r"/api/admin/audit", lambda q: (200, store.list_audit(q.arg("admin"), q.arg("entity"), q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "admin"),

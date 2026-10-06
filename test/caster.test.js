@@ -74,13 +74,14 @@ function rover(port, { path = '/TOUR', user, password, version = 1, raw, gga, re
 }
 
 // Стенд: шина вместо приёма, служба раздачи с тестовыми логинами
-async function bench({ rules, casterConfig = {}, mountpoints, users, bind } = {}) {
+async function bench({ rules, casterConfig = {}, mountpoints, users, bind, auto } = {}) {
   const bus = new BusServer({ port: 0 });
   const busPort = await bus.ready;
   const config = merge(DEFAULTS, {
     ...(bind ? { bind } : {}),
     ingest: { busPort },
     caster: { statePort: 0, port: 0, enabled: true, ...casterConfig },
+    ...(auto ? { auto } : {}),
     stations: [{ code: 'TOUR', name: 'Turinsk', source: { mode: 'listen', port: 1 } }, { code: 'DEAD', name: 'Silent', source: { mode: 'listen', port: 2 } }],
     mountpoints: mountpoints || [
       { name: 'TOUR', station: 'TOUR' },
@@ -558,6 +559,102 @@ test('свой порт сети раздачи: на нём видны и до�
     b.feed('TOUR', obs(2000));
     await until(() => new StreamParser().push(right.body()).some((f) => f.kind === 'rtcm' && f.type === 1074));
     right.end();
+  } finally {
+    await b.stop();
+  }
+});
+
+test('точка «ближайшая база»: поток ближайшей станции, переход при переезде, статистика фикса', async () => {
+  // Строка GGA: положение, тип решения (4 — фикс, 5 — плавающее) и возраст поправки
+  const gga = (lat, lon, quality = 1, age = '') => {
+    const part = (v, w) => `${String(Math.floor(v)).padStart(w, '0')}${((v - Math.floor(v)) * 60).toFixed(4).padStart(7, '0')}`;
+    const body = `GPGGA,120000.00,${part(lat, 2)},N,${part(lon, 3)},E,${quality},12,0.8,250.0,M,-8.0,M,${age},0000`;
+    let sum = 0;
+    for (let i = 0; i < body.length; i++) sum ^= body.charCodeAt(i);
+    return `$${body}*${sum.toString(16).toUpperCase().padStart(2, '0')}`;
+  };
+  // Вторая станция — в Екатеринбурге, первая (TOUR) — в Туринске, между ними около 230 км
+  const EKB = rtcm.encodePosition({ stationId: 19, ecef: [1719977.663, 3048216.851, 5314477.642] });
+  const b = await bench({ rules: { areaGgaMs: 600 }, auto: [{ name: 'NEAR', points: ['TOUR', 'DEAD', 'GONE'] }, { name: 'TOUR', points: ['TOUR'] }],
+    mountpoints: [{ name: 'TOUR', station: 'TOUR' }, { name: 'DEAD', station: 'DEAD' }], users: { ivan: { password: 'pass-ivan', maxSessions: 5 } } });
+  try {
+    b.feed('DEAD', EKB, obs(1000));
+    await until(async () => (await b.state()).autos[0].bases === 2);
+    // Имя, занятое обычной точкой, точкой «ближайшая база» не становится
+    assert.deepEqual((await b.state()).autos.map((a) => a.name), ['NEAR']);
+    const table = rover(b.port, { path: '/', user: 'ivan', password: 'pass-ivan' });
+    await until(() => table.closed);
+    assert.match(table.text(), /STR;NEAR;Nearest base;[^\r\n]*;1;0;/, 'в таблице источников точка требует положения ровера');
+
+    // Ровер под Екатеринбургом получает базу в Екатеринбурге
+    const c = rover(b.port, { path: '/NEAR', user: 'ivan', password: 'pass-ivan', version: 2, gga: gga(56.84, 60.6) });
+    const frames = () => new StreamParser().push(c.body()).filter((f) => f.kind === 'rtcm');
+    await until(() => frames().some((f) => f.type === 1005));
+    assert.equal(rtcm.decodePosition(frames().find((f) => f.type === 1005).payload).stationId, 19);
+    let s = (await b.state()).clients[0];
+    assert.deepEqual([s.entry, s.point], ['NEAR', 'DEAD']);
+    // Плавающее решение, затем фикс, затем срыв и снова фикс
+    for (const q of [5, 5, 4, 4, 5, 4]) { c.socket.write(`${gga(56.84, 60.6, q, 1.2)}\r\n`); await new Promise((r) => setTimeout(r, 60)); }
+    await until(async () => (await b.state()).clients[0].fix && (await b.state()).clients[0].fix.lost === 1);
+    s = (await b.state()).clients[0];
+    assert.ok(s.fix.ttf > 0 && s.fix.ttf < 2, `до фикса ${s.fix.ttf} с`);
+    assert.ok(s.fix.km > 2 && s.fix.km < 6 && s.fix.kmFix === s.fix.km, `до базы ${s.fix.km} км`);
+    assert.deepEqual([s.fix.age, s.fix.ageMax, s.fix.lost], [1.2, 1.2, 1]);
+    // Сдвиг на пару километров базу не меняет; переезд в Туринск — меняет
+    c.socket.write(`${gga(56.86, 60.63)}\r\n`);
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal((await b.state()).clients[0].point, 'DEAD');
+    c.socket.write(`${gga(58.0, 63.6)}\r\n`);
+    await until(async () => (await b.state()).clients[0].point === 'TOUR');
+    await until(() => frames().filter((f) => f.type === 1005).some((f) => rtcm.decodePosition(f.payload).stationId === 6), 'новая база представилась роверу');
+    b.feed('TOUR', obs(3000));
+    await until(() => frames().some((f) => f.type === 1074));
+    assert.deepEqual((await b.state()).clients[0].fix.bases, ['DEAD', 'TOUR']);
+    c.end();
+
+    // Без положения ближайшую базу не выбрать: сеанс закрывается
+    const silent = rover(b.port, { path: '/NEAR', user: 'ivan', password: 'pass-ivan', version: 2 });
+    await until(() => silent.closed);
+    assert.equal(types(silent.body()).length, 0, 'без положения поток не отдаётся');
+  } finally {
+    await b.stop();
+  }
+});
+
+test('состав потока сети: только выбранные системы и не каждая эпоха, признак конца эпохи расставлен заново', async () => {
+  const { Shaper, needed } = require('../modules/shaper/shaper');
+  const sat = [{ prn: 3, rangeMs: 70.2, signals: [{ id: 2, cnr: 45 }] }];
+  const epochOf = (tow) => [[1074, true], [1084, true], [1094, true], [1124, false]].map(([type, multiple]) => sim.encodeMsm4({ type, stationId: 6, epoch: type === 1084 ? 1000 : tow, multiple, sats: sat }));
+  const flag = (buf) => Boolean(buf[9] & 0x02);
+  assert.equal(needed({ systems: ['G', 'R', 'E', 'C'], rate: 1 }), false);
+  assert.equal(needed({ systems: ['G', 'R'], rate: 1 }), true);
+  assert.equal(needed({ rate: 2 }), true);
+
+  // GPS и ГЛОНАСС, раз в две секунды: BeiDou и Galileo убраны, последним в эпохе стал ГЛОНАСС
+  const shaper = new Shaper({ systems: ['G', 'R'], rate: 2 });
+  const out = [];
+  for (const tow of [10000, 11000, 12000]) for (const f of epochOf(tow)) out.push(...shaper.push(f));
+  assert.deepEqual(types(Buffer.concat(out)), [1074, 1084, 1074, 1084], 'эпоха на нечётной секунде пропущена');
+  assert.deepEqual(out.map(flag), [true, false, true, false]);
+  // Контрольная сумма исправленного сообщения верна: разборщик принимает его как RTCM
+  assert.equal(new StreamParser().push(Buffer.concat(out)).filter((f) => f.kind === 'rtcm').length, 4);
+  // Задержки ГЛОНАСС идут вместе с ГЛОНАСС; координаты базы — всегда
+  assert.deepEqual([new Shaper({ systems: ['G'] }).push(BIASES).length, shaper.push(BIASES).length, new Shaper({ systems: ['G'] }).push(POSITION).length], [0, 1, 1]);
+
+  // В раздаче: точка сети отдаёт отобранное, обычная точка — всё
+  const b = await bench({ mountpoints: [{ name: 'TOUR', station: 'TOUR' }, { name: 'N3_TOUR', station: 'TOUR', filter: { systems: ['G', 'E'], rate: 1 } }] });
+  try {
+    const plain = rover(b.port, { path: '/TOUR', user: 'ivan', password: 'pass-ivan' });
+    const thin = rover(b.port, { path: '/N3_TOUR', user: 'two', password: 'p2' });
+    await until(() => b.service.sessions.size === 2);
+    b.feed('TOUR', ...epochOf(20000));
+    const seen = (c) => types(c.body()).filter((t) => t >= 1071 && t <= 1137);
+    await until(() => seen(plain).length === 4 && seen(thin).length === 2);
+    assert.deepEqual([seen(plain), seen(thin)], [[1074, 1084, 1094, 1124], [1074, 1094]]);
+    assert.ok(!types(thin.body()).includes(1230) && types(plain.body()).includes(1230), 'задержки ГЛОНАСС не идут в сеть без ГЛОНАСС');
+    assert.equal((await b.state()).points.find((p) => p.name === 'N3_TOUR').shaped, true);
+    plain.end();
+    thin.end();
   } finally {
     await b.stop();
   }

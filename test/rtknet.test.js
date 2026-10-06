@@ -256,7 +256,7 @@ test('пересчёт в потоке: семь параметров 1021 по�
   const datum = C.describe('msk66').datum;
   const points = [[1719977.663, 3048216.851, 5314477.642], [1499264.8, 3031597.7, 5389560.7], [1875908.2, 2975618.6, 5302876.0]];
   for (const link of [{ tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 }, { tx: 0.7491, ty: 0.6039, tz: 1.1418, rx: -0.147343, ry: -0.067344, rz: -0.022601, m: -0.25367 }]) {
-    const plan = T.plan(link, 'msk66', { lat: 57.5, lon: 61, dLat: 2, dLon: 4 });
+    const plan = T.plan({ target: 'msk66', link, area: { lat: 57.5, lon: 61, dLat: 2, dLon: 4 } });
     // То, что уйдёт в поток, читается обратно теми же числами
     const frame = rtcmMsg.encodeHelmert({ ...plan.helmert, systemId: 1 });
     const sent = rtcmMsg.decodeHelmert(frame.subarray(3, frame.length - 3));
@@ -270,13 +270,30 @@ test('пересчёт в потоке: семь параметров 1021 по�
     }
   }
   // Проекция — на каждую зону своя; зона выбирается по долготе
-  const plan = T.plan({ tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 }, 'msk66');
+  const plan = T.plan({ target: 'msk66', link: { tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 } });
   assert.deepEqual(plan.projections.map((z) => [z.zone, z.lon0, z.falseEasting]), [[1, 60.05, 1500000], [2, 66.05, 2500000], [3, 72.05, 3500000]]);
   assert.equal(T.zoneFor(plan, 60.6).zone, 1);
   assert.equal(T.zoneFor(plan, 64.2).zone, 2);
   const proj = rtcmMsg.decodeProjection(rtcmMsg.encodeProjection(plan.projections[0]).subarray(3, -3));
   assert.ok(Math.abs(proj.lon0 - 60.05) < 1e-8 && proj.falseNorthing === -5911057.63 && proj.scale === 1);
-  assert.equal(T.plan(null, 'msk66'), null);
+  assert.equal(T.plan({ target: 'msk66' }), null);
+  // СК-42: те же семь параметров, зоны — шестиградусные, какие накрывают область
+  const sk = T.plan({ target: 'sk42', link: { tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 }, area: { lat: 58, lon: 61, dLat: 3, dLon: 4.5 } });
+  assert.deepEqual(sk.projections.map((z) => [z.zone, z.lon0, z.falseEasting, z.falseNorthing]), [[10, 57, 10500000, 0], [11, 63, 11500000, 0]]);
+  assert.deepEqual([sk.helmert.dx, sk.helmert.targetA, T.zoneFor(sk, 59.9).zone, T.zoneFor(sk, 60.1).zone], [plan.helmert.dx, 6378245, 10, 11]);
+  // ГСК-2011: привязка не нужна; семь параметров повторяют перенос эпохи по движению плиты
+  const gsk = T.plan({ target: 'gsk2011', epoch: 2026.76, area: { lat: 58, lon: 61, dLat: 3, dLon: 4.5 } });
+  assert.deepEqual([gsk.helmert.targetName, gsk.helmert.targetA, gsk.projections.length], ['GSK-2011', 6378136.5, 2]);
+  const X = [1719975.9487, 3048220.6268, 5314476.1898];
+  const mas = Math.PI / 648000000;
+  const w = [-0.085 * mas, -0.531 * mas, 0.770 * mas];
+  const dt = 2026.76 - 2011;
+  const v = [w[1] * X[2] - w[2] * X[1], w[2] * X[0] - w[0] * X[2], w[0] * X[1] - w[1] * X[0]];
+  const want = X.map((c, i) => c - v[i] * dt + [0.0016, 0.0019, 0.0023][i] + 0.01e-9 * c);
+  const got = T.apply(gsk.helmert, X);
+  assert.ok(Math.hypot(...got.map((c, i) => c - want[i])) < 0.0015, `ГСК-2011: расхождение ${Math.hypot(...got.map((c, i) => c - want[i]))} м`);
+  assert.ok(Math.hypot(...got.map((c, i) => c - X[i])) > 0.35, 'плита за пятнадцать лет уехала на десятки сантиметров');
+  assert.equal(T.plan({ target: 'gsk2011' }), null);
 });
 
 test('геоид Russia2008: высоты совпадают с таблицей заказчика, вне вырезки ответа нет', () => {

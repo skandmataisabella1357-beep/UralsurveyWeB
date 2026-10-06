@@ -96,3 +96,34 @@ def enu(xyz: list[float], d: list[float]) -> list[float]:
     lat, lon = geodetic(xyz)
     sl, cl, sp, cp = math.sin(lon), math.cos(lon), math.sin(lat), math.cos(lat)
     return [-sl * d[0] + cl * d[1], -sp * cl * d[0] - sp * sl * d[1] + cp * d[2], cp * cl * d[0] + cp * sl * d[1] + sp * d[2]]
+
+
+def to_itrf2020(xyz: list[float], year: float) -> list[float]:
+    """ITRF2014 → ITRF2020 на эпоху year (параметры IERS: сдвиги 1,4; 0,9; −1,4 мм и масштаб
+    0,42·10⁻⁹ на 2015,0, скорости 0; 0,1; −0,2 мм в год). Разница — миллиметры."""
+    dt = year - 2015
+    t = [0.0014, 0.0009 + 0.0001 * dt, -0.0014 - 0.0002 * dt]
+    return [v + t[i] + 0.42e-9 * v for i, v in enumerate(xyz)]
+
+
+def from_itrf2020(year: float) -> dict:
+    """Малая поправка «ITRF2020 → ITRF2014» на эпоху year в записи привязки: сдвиги в метрах,
+    масштаб в миллионных долях."""
+    dt = year - 2015
+    return {"tx": -0.0014, "ty": -0.0009 - 0.0001 * dt, "tz": 0.0014 + 0.0002 * dt, "rx": 0.0, "ry": 0.0, "rz": 0.0, "m": -0.00042}
+
+
+PLATE = (-0.085, -0.531, 0.770)  # движение Евразийской плиты (модель ITRF2014), мс дуги в год
+
+
+def to_gsk2011(xyz: list[float], year: float) -> list[float]:
+    """ITRF2014 на эпоху year → ГСК-2011 (ITRF2008, закреплённая на эпоху 2011,0): перенос эпохи
+    по движению Евразийской плиты и переход ITRF2014 → ITRF2008. Точность — как у модели плиты,
+    2–3 см за пятнадцать лет."""
+    mas = math.pi / 648000000
+    w = [v * mas for v in PLATE]
+    dt = year - 2011
+    x, y, z = xyz
+    v = [w[1] * z - w[2] * y, w[2] * x - w[0] * z, w[0] * y - w[1] * x]
+    t = (0.0016, 0.0019, 0.0023)
+    return [c - v[i] * dt + t[i] + 0.01e-9 * c for i, c in enumerate(xyz)]

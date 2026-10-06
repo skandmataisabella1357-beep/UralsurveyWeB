@@ -100,12 +100,13 @@
         { name: 'coords_note', label: 'Причина правки координат', type: 'text', virtual: true },
         { name: 'send_catalog', label: 'Раздавать роверам эти координаты вместо тех, что шлёт база', type: 'check', value: false },
         { name: 'antenna_height', label: 'Высота антенны, м', type: 'number' },
-        { name: 'antenna_type', label: 'Тип антенны', type: 'text' }, { name: 'receiver_type', label: 'Тип приёмника', type: 'text' },
+        { name: 'antenna_type', label: 'Антенна (справочно, в расчёт и в поток не идёт)', type: 'text' }, { name: 'receiver_type', label: 'Тип приёмника', type: 'text' },
         { name: 'note', label: 'Заметка', type: 'area' },
       ],
     },
     mountpoints: {
       title: 'Точки подключения', path: '/api/admin/mountpoints', needs: ['stations'],
+      hint: 'Кроме этих точек есть NEAR — «ближайшая база»: ровер подключается к ней один раз, а сервер сам отдаёт поток ближайшей станции по его положению и переводит на другую, когда он уезжает. У каждой сети раздачи своя такая точка: ИМЯСЕТИ_NEAR.',
       hint: 'Точку заводит администратор: какую завёл, такая и есть. Тип выдачи в имени писать не обязательно.',
       cols: [
         ['Точка', (r) => `<span class="fig">${esc(r.name)}</span>`], ['Станция', (r) => `<span class="fig">${esc(r.station_code)}</span>`],
@@ -172,7 +173,7 @@
         { name: 'name', label: 'Название', type: 'text', required: true }, { name: 'period_days', label: 'Срок, дней', type: 'number', required: true, value: 30 },
         { name: 'all_mountpoints', label: 'Все точки с доступом «все с подпиской»', type: 'check', value: true },
         { name: 'mountpoint_ids', label: 'Точки тарифа', type: 'multi', options: () => lists.mountpoints.filter((m) => !m.network_id).map((m) => [m.id, m.name]), when: (v) => !v.all_mountpoints },
-        { name: 'network_ids', label: 'Сети раздачи целиком', type: 'multi', options: () => lists.networks.map((n) => [n.id, `${n.name} — ${NET_KIND[n.kind]}`]) },
+        { name: 'network_ids', label: 'Сети раздачи целиком', type: 'multi', options: () => lists.networks.map((n) => [n.id, `${n.name} — ${netLabel(recipeOf(n))}`]) },
         { name: 'max_sessions', label: 'Сеансов на логин', type: 'number', value: 1 }, { name: 'price', label: 'Цена, справочно', type: 'number' }, { name: 'note', label: 'Заметка', type: 'area' },
       ],
     },
@@ -198,12 +199,19 @@
       ],
     },
     sessions: {
-      title: 'Сеансы роверов', path: '/api/admin/sessions?limit=300', paged: true, readonly: true, search: true, searchParam: 'login', searchHint: 'Логин целиком',
+      title: 'Сеансы роверов', path: '/api/admin/sessions?limit=300', paged: true, readonly: true, search: true, searchParam: 'login', searchHint: 'Логин целиком', needs: ['fix-stats'],
       hint: 'Открытые сеансы можно закрыть: ровер переподключится сам, если ему это разрешено.',
+      summary: () => fixSummaryHtml(),
       cols: [
         ['Логин', (r) => esc(r.login)], ['Точка', (r) => `<span class="fig">${esc(r.mountpoint)}</span>`], ['Начало', (r) => when(r.started_at)],
         ['Конец', (r) => (r.ended_at ? when(r.ended_at) : '<span class="is-online">на связи</span>')], ['Длительность', (r) => esc(duration((r.ended_at ? Date.parse(r.ended_at) : Date.now()) - Date.parse(r.started_at)))],
         ['Передано', (r) => `<span class="fig">${esc(bytes(r.bytes))}</span>`], ['Решение', (r) => esc(KIND[r.last_kind] || (r.last_lat === null ? 'координаты не передавались' : r.last_kind))],
+        ['База', (r) => `<span class="fig">${esc(r.station || '—')}</span>${r.fix && r.fix.bases && r.fix.bases.length > 1 ? ` <small class="adm-note">сменил ${r.fix.bases.length - 1}</small>` : ''}`],
+        ['До базы, км', (r) => `<span class="fig">${r.fix && r.fix.km != null ? num(r.fix.km, 1) : '—'}</span>`],
+        ['До фикса', (r) => { const f = r.fix || {}; return f.ttf != null ? `<span class="fig ${f.ttf <= 30 ? 'is-online' : (f.ttf <= 120 ? 'is-wait' : 'is-fail')}">${span(f.ttf)}</span>` : (f.float || f.other ? '<span class="is-fail">фикса не было</span>' : '—'); }],
+        ['В фиксе', (r) => { const f = r.fix || {}; const all = (f.fixed || 0) + (f.float || 0) + (f.other || 0); return all ? `<span class="fig">${num(100 * (f.fixed || 0) / all, 0)}${NBSP}%</span>` : '—'; }],
+        ['Срывов', (r) => `<span class="fig">${r.fix && r.fix.lost != null ? r.fix.lost : '—'}</span>`],
+        ['Возраст поправки, с', (r) => `<span class="fig">${r.fix && r.fix.age != null ? `${num(r.fix.age, 1)}${r.fix.ageMax > r.fix.age + 2 ? ` · до ${num(r.fix.ageMax, 0)}` : ''}` : '—'}</span>`],
         ['Адрес', (r) => `<span class="fig">${esc(r.address)}</span>`], ['Программа', (r) => esc(r.agent || '—')], ['Чем закончился', (r) => esc(r.end_reason || '—')],
       ],
       rowAction: { label: 'Закрыть сеанс', when: (r) => !r.ended_at, confirm: (r) => `Закрыть сеанс логина ${r.login}?`, run: async (r) => { const res = await api('/api/admin/sessions/close', 'POST', { id: r.caster_id }); return res.ok ? 'Сеанс закрыт' : res.error; } },
@@ -331,7 +339,7 @@
       if (!lists.networks.length) html += '<div class="rail-empty">Сетей пока нет. «+» — выпустить сеть из координат подсети.</div>';
       for (const n of lists.networks) {
         const on = live ? n.points.filter((p) => { const lp = live.points.find((x) => x.name === p.name); return lp && lp.live; }).length : 0;
-        html += `<button class="station is-layer is-net is-shown is-${n.kind} ${on ? 'is-online' : ''}" type="button" data-network="${n.id}" aria-current="${net.open && net.id === n.id}" title="${esc(n.title || n.name)}: ${NET_KIND[n.kind]}"><i class="adm-net-mark"></i><span class="station-name">${esc(n.name)}</span><span class="station-figures">в.${n.version} · ${on}/${n.points.length}</span><span class="adm-gear" title="Открыть сеть: что раздаёт, версии, выпуск">⚙</span></button>`;
+        html += `<button class="station is-layer is-net is-shown is-${netTone(recipeOf(n))} ${on ? 'is-online' : ''}" type="button" data-network="${n.id}" aria-current="${net.open && net.id === n.id}" title="${esc(n.title || n.name)}: ${netLabel(recipeOf(n))}"><i class="adm-net-mark"></i><span class="station-name">${esc(n.name)}</span><span class="station-figures">в.${n.version} · ${on}/${n.points.length}</span><span class="adm-gear" title="Открыть сеть: что раздаёт, версии, выпуск">⚙</span></button>`;
       }
     }
     // Слои из файлов KML и DXF: щелчок открывает действия со слоем
@@ -454,6 +462,8 @@
     $('list-title').textContent = v.title;
     $('list-hint').hidden = !v.hint;
     $('list-hint').textContent = v.hint || '';
+    $('list-summary').hidden = !v.summary;
+    $('list-summary').innerHTML = v.summary ? v.summary() : '';
     $('list-search').hidden = !v.search;
     $('list-search').placeholder = v.searchHint || 'Поиск';
     $('list-add').hidden = v.readonly || v.custom || !isAdmin();
@@ -1070,10 +1080,34 @@
 
   // Свойства станции сбоку, по щелчку — в том же виде, что в приложении: состояние, положение,
   // спутники по системам, поток, состав потока, журнал.
+  // ITRF2014 → ITRF2020 на эпоху year (параметры IERS: сдвиги 1,4; 0,9; −1,4 мм и масштаб
+  // 0,42·10⁻⁹ на 2015,0, скорости 0; 0,1; −0,2 мм в год; поворотов нет). Разница — миллиметры.
+  function to2020(xyz, year) {
+    const dt = year - 2015;
+    const t = [0.0014, 0.0009 + 0.0001 * dt, -0.0014 - 0.0002 * dt];
+    return xyz.map((v, i) => v + t[i] + 0.42e-9 * v);
+  }
+  // ITRF2014 на эпоху year → ГСК-2011 (это ITRF2008, закреплённая на эпоху 2011,0). Два шага:
+  // перенос на 2011,0 по движению Евразийской плиты (модель ITRF2014: поворот −0,085; −0,531;
+  // 0,770 мс дуги в год, около 2,5 см в год на Урале) и переход ITRF2014 → ITRF2008 по параметрам
+  // IERS (сдвиги 1,6; 1,9; 2,4 мм и масштаб −0,02·10⁻⁹ на 2010,0). Точность — как у модели плиты:
+  // 1–2 мм в год, за пятнадцать лет это 2–3 см.
+  const GSK = { a: 6378136.5, f: 1 / 298.2564151 };
+  function toGsk2011(xyz, year) {
+    const mas = Math.PI / 648000000;
+    const w = [-0.085 * mas, -0.531 * mas, 0.770 * mas];
+    const dt = year - 2011;
+    const v = [w[1] * xyz[2] - w[2] * xyz[1], w[2] * xyz[0] - w[0] * xyz[2], w[0] * xyz[1] - w[1] * xyz[0]];
+    const then = xyz.map((c, i) => c - v[i] * dt);
+    const t = [0.0016, 0.0019, 0.0024 - 0.0001];
+    return then.map((c, i) => c + t[i] + 0.01e-9 * c);
+  }
+  const yearNow = () => { const now = new Date(); const y = now.getUTCFullYear(); return y + (now - Date.UTC(y, 0, 1)) / (Date.UTC(y + 1, 0, 1) - Date.UTC(y, 0, 1)); };
+
   // Что показывает «Положение станции»: система координат, вид высоты и набор координат
   const card = { sys: 'msk66', height: 'ell', set: null };
   try { Object.assign(card, JSON.parse(localStorage.getItem('admin-card') || '{}')); } catch (err) { /* по умолчанию */ }
-  const CARD_SYSTEMS = [['msk66', 'МСК-66'], ['sk42', 'СК-42'], ['utm', 'UTM'], ['llh', 'широта, долгота']];
+  const CARD_SYSTEMS = [['msk66', 'МСК-66'], ['sk42', 'СК-42'], ['gsk2011', 'ГСК-2011'], ['utm', 'UTM'], ['llh', 'широта, долгота']];
 
   function renderDetail() {
     const row = view === 'stations' && picked ? rows.find((r) => r.id === picked) : null;
@@ -1101,6 +1135,20 @@
       const stream = pos && pos.source === 'rtcm' ? pos.ecef : null;
       const cat = row.x !== null ? [row.x, row.y, row.z] : null;
       const itrf = lists.subnets.map((g) => ({ g, a: (g.accepted || {})[row.code] })).filter((x) => x.a);
+      // Настоящие координаты ITRF станции в каждой её подсети: принятые из PPP-AR, иначе среднее
+      // PPP-AR по суткам, иначе разовый PPP-AR. Сетевой расчёт сюда идёт, только если его опорная
+      // задана в ITRF2014, а не координатами основной сети.
+      const isShifted = (g, acc) => { const ref = lists.stations.find((x) => x.id === g.reference_station_id); return acc.quality !== 'ppp' && Boolean(ref) && ref.x !== null && g.ref_x !== null && Math.hypot(ref.x - g.ref_x, ref.y - g.ref_y, ref.z - g.ref_z) < 0.05; };
+      const realOf = (g) => {
+        const acc = (g.accepted || {})[row.code];
+        if (acc && !isShifted(g, acc)) return { v14: [acc.x, acc.y, acc.z], epoch: acc.epoch || null, how: acc.quality === 'ppp' ? `принято из PPP-AR${acc.days ? `, среднее по ${acc.days} сут.` : ', разовый расчёт'}` : 'принято из сетевого расчёта от опорной в ITRF2014' };
+        const mean = ((g.ppp_mean || {}).stations || {})[row.code];
+        if (mean) return { v14: [mean.x, mean.y, mean.z], epoch: mean.epoch || null, how: `PPP-AR, среднее по ${mean.n} сут., ещё не принято` };
+        const once = (((g.ppp_results || {}).stations) || {})[row.code];
+        if (once && once.x14 !== undefined) return { v14: [once.x14, once.y14, once.z14], v20: [once.x, once.y, once.z], epoch: (g.ppp_results || {}).epoch || null, how: `PPP-AR, разовый расчёт за ${num(once.hours, 1)} ч, ещё не принято` };
+        return null;
+      };
+      const reals = lists.subnets.filter((g) => g.stations.includes(row.code)).map((g) => ({ g, r: realOf(g) })).filter((x) => x.r);
       const gap = (p, q) => (p && q ? Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) : null);
       const plainPoints = (row.mountpoints || []).filter((name) => !lists.networks.some((n) => n.points.some((p) => p.name === name)));
       // Привязка для перехода между настоящими и смещёнными координатами — из подсети станции
@@ -1111,19 +1159,36 @@
       const main = served === 'catalog' ? cat : stream;
       if (stream) {
         const same = gap(stream, cat);
-        const near = itrf.length ? gap(stream, [itrf[0].a.x, itrf[0].a.y, itrf[0].a.z]) : null;
-        const real = near !== null && near < 0.05;
+        // Поток считается настоящим ITRF2014, только если он совпал с координатами из PPP-AR и при
+        // этом не совпадает с каталогом основной сети. Сетевой расчёт для этого не годится: он
+        // наследует систему своей опорной станции и может сам быть смещённым.
+        const near = reals.length ? gap(stream, reals[0].r.v14) : null;
+        const real = near !== null && near < 0.05 && !(same !== null && same < 0.05);
         const sys = same !== null && same < 0.001 ? 'совпадает с каталогом сети 1' : (real ? 'совпадает с ITRF2014' : (cat ? 'свои координаты базы, с каталогом не совпадают' : 'как передаёт база'));
         sets.push({ id: 'stream', cls: 'is-stream', name: 'Поток базы', sys, v: stream, frame: real ? 'itrf' : 'net1', link, on: served === 'stream' ? plainPoints : [] });
       } else if (pos) {
         sets.push({ id: 'rough', cls: 'is-stream', name: 'По наблюдениям', sys: 'вычислено грубо: в потоке координат станции нет, точность метровая', v: pos.ecef, frame: 'net1', link, on: [], rough: true });
       }
       if (cat) sets.push({ id: 'catalog', cls: 'is-cat', name: 'Каталог · сеть 1', sys: 'смещённые, как раздавал Eagle; для работы в МСК', v: cat, frame: 'net1', link, on: served === 'catalog' ? plainPoints : [] });
-      for (const { g, a: acc } of itrf) sets.push({ id: `itrf-${g.id}`, cls: 'is-itrf', name: `ITRF2014 · подсеть ${g.name}`, sys: acc.quality === 'ppp' ? `PPP-AR${acc.days ? `, среднее по ${acc.days} сут.` : ', разовый расчёт'}` : 'сетевой расчёт от опорной', v: [acc.x, acc.y, acc.z], frame: 'itrf', link: g.link && g.link.params ? g.link.params : link, on: [] });
+      // Сетевой расчёт от опорной с координатами основной сети — отдельным набором: он смещённый
+      for (const { g, a: acc } of itrf) {
+        if (!isShifted(g, acc)) continue;
+        const ref = lists.stations.find((x) => x.id === g.reference_station_id);
+        sets.push({ id: `calc-${g.id}`, cls: 'is-net', name: `Подсеть ${g.name} · сетевой расчёт`, sys: `от опорной ${ref.code} с координатами основной сети — результат в её системе, не ITRF`, v: [acc.x, acc.y, acc.z], frame: 'net1', link: g.link && g.link.params ? g.link.params : link, on: [] });
+      }
+      // ITRF2014 и ITRF2020 — по настоящим координатам станции
+      for (const { g, r } of reals) {
+        const own = g.link && g.link.params ? g.link.params : link;
+        const year = r.epoch || yearNow();
+        sets.push({ id: `itrf-${g.id}`, cls: 'is-itrf', name: `ITRF2014 · подсеть ${g.name}`, sys: r.how, v: r.v14, frame: 'itrf', link: own, on: [], epoch: r.epoch });
+        const v20 = r.v20 || to2020(r.v14, year);
+        sets.push({ id: `itrf20-${g.id}`, cls: 'is-itrf', name: `ITRF2020 · подсеть ${g.name}`, sys: `${r.v20 ? 'как получено в PPP-AR' : 'пересчёт из ITRF2014'}, эпоха ${year.toFixed(2)}; от ITRF2014 отличается на ${num(Math.hypot(...v20.map((c, i) => c - r.v14[i])) * 1000, 1)} мм`, v: v20, frame: 'itrf', link: own, on: [], epoch: r.epoch });
+      }
       for (const n of lists.networks) {
         const r = ((n.release || {}).stations || {})[row.code];
         const p = n.points.find((x) => x.station === row.code);
-        if (r) sets.push({ id: `net-${n.id}`, cls: n.kind === 'local' ? 'is-net' : 'is-itrf', name: `Сеть ${n.name} · версия ${n.version}`, sys: n.kind === 'local' ? 'согласованные, в системе сети 1' : 'ITRF2014', v: [r.x, r.y, r.z], frame: n.kind === 'local' ? 'net1' : 'itrf', link: n.release.params || link, on: p ? [p.name] : [] });
+        const made = recipeOf(n);
+        if (r) sets.push({ id: `net-${n.id}`, cls: made.coords === 'net1' ? 'is-net' : 'is-itrf', name: `Сеть ${n.name} · версия ${n.version}`, sys: made.coords === 'net1' ? 'согласованные, в системе сети 1' : COORDS[made.coords], v: [r.x, r.y, r.z], frame: frameOf(made), link: n.release.params || link, on: p ? [p.name] : [], epoch: n.release.epoch || null });
       }
 
       // Положение: выбранный набор в выбранной системе. По умолчанию — то, что раздаётся роверам.
@@ -1136,7 +1201,7 @@
           <div class="adm-card-pick">${[['ell', 'над эллипсоидом'], ['egm2008', 'по геоиду Russia2008']].map(([id, name]) => `<button class="adm-chip" type="button" data-card-h="${id}" aria-current="${id === card.height}">${name}</button>`).join('')}</div>`;
         const d = set.rough ? 0 : 3;
         const at = toFrame(set.v, set.frame, sys.frame, set.link);
-        const p = at ? inSystem(sys, at) : null;
+        const p = at ? inSystem(sys, at, set.epoch) : null;
         let rowsHtml = '';
         let side = '';
         let note = '';
@@ -1146,7 +1211,8 @@
           const real = toFrame(set.v, set.frame, 'itrf', set.link) || set.v;
           const g = window.CoordSys.toGeodetic(geoid ? real : at, WGS);
           const n = geoid && exp.geoid ? exp.geoid.undulation(g.lat * 180 / Math.PI, g.lon * 180 / Math.PI) : null;
-          const hText = geoid ? (n === null ? `<dd>${exp.geoid ? 'вне области модели' : 'загружается…'}</dd>` : `<dd class="fig">${num(g.h - n, d)}<span>м по геоиду Russia2008</span></dd>`) : `<dd class="fig">${num(g.h, d)}<span>м над эллипсоидом</span></dd>`;
+          const hEll = p.h !== undefined ? p.h : g.h;
+          const hText = geoid ? (n === null ? `<dd>${exp.geoid ? 'вне области модели' : 'загружается…'}</dd>` : `<dd class="fig">${num(g.h - n, d)}<span>м по геоиду Russia2008</span></dd>`) : `<dd class="fig">${num(hEll, d)}<span>м над эллипсоидом${sys.id === 'gsk2011' ? ' ГСК-2011' : ''}</span></dd>`;
           if (sys.id === 'llh') {
             const la = dms(p.a, 'lat', set.rough ? 1 : 5);
             const lo = dms(p.b, 'lon', set.rough ? 1 : 5);
@@ -1157,6 +1223,7 @@
             side = `${sys.name.split(' · ')[0]}, зона ${p.zone}`;
             if (p.loose) note += '<b>Параметры этой зоны с каталогом не сверены</b>: расхождение с каталожными координатами возможно. ';
           }
+          if (sys.epoch) note += 'ГСК-2011 закреплена на эпоху 2011,0: координаты перенесены на неё по модели движения Евразийской плиты, точность 2–3 см. ';
           if (set.frame !== sys.frame) note += `Пересчитано привязкой подсети (${set.frame === 'itrf' ? 'ITRF2014 → основная сеть' : 'основная сеть → ITRF2014'}). `;
           if (geoid && n !== null && set.frame === 'net1' && !set.link) note += 'Высота над эллипсоидом взята от смещённых координат: привязки нет, расхождение около 0,2 м. ';
           if (geoid) note += 'Геоид Russia2008 (EGM2008) — тот же файл, что в TBC. ';
@@ -1212,6 +1279,7 @@
       if (st.stationId !== null && st.stationId !== undefined) add('Номер станции в потоке', String(st.stationId), true);
       if (d.receiver) add('Приёмник', esc([d.receiver, d.firmware].filter(Boolean).join(', ')));
       if (d.receiverSerial) add('Серийный номер приёмника', esc(d.receiverSerial), true);
+      if (row.antenna_type) add('Антенна', `${esc(row.antenna_type)} <small class="adm-note">по каталогу; координаты станции — фазовый центр</small>`);
       if (d.antenna) add('Антенна', esc(d.antenna));
       if (d.antennaSerial) add('Серийный номер антенны', esc(d.antennaSerial), true);
       if (row.mountpoints && row.mountpoints.length) add('Точки подключения', esc(row.mountpoints.join(', ')), true);
@@ -1246,6 +1314,20 @@
     if (event.target.closest('#detail-edit')) openForm(rows.find((r) => r.id === picked));
     if (event.target.closest('#detail-toggle')) toggleStation(rows.find((r) => r.id === picked));
   });
+
+  // ---------- Статистика фикса ----------
+  // Сводка над журналом сеансов: как быстро роверы получают фикс в зависимости от расстояния до базы
+  function fixSummaryHtml() {
+    const d = lists['fix-stats'];
+    if (!d || !d.bins) return '';
+    if (!d.sessions) return `<p class="hint">Статистика фикса за ${d.days} дней: сеансов с положением ровера пока нет. Она появится, когда роверы начнут работать: считается время до фикса, доля времени в фиксе и срывы — по расстоянию до базы.</p>`;
+    const rowsHtml = d.bins.filter((b) => b.sessions).map((b) => `<tr><td class="fig">${b.to === null ? `от ${b.from}` : `${b.from}–${b.to}`}</td><td class="fig">${b.sessions}</td>
+      <td class="fig">${b.ttf_median === null ? '<span class="is-fail">фикса не было</span>' : `<span class="${b.ttf_median <= 30 ? 'is-online' : (b.ttf_median <= 120 ? 'is-wait' : 'is-fail')}">${span(b.ttf_median)}</span>`}</td>
+      <td class="fig">${b.ttf_worst === null ? '—' : span(b.ttf_worst)}</td><td class="fig">${b.fixed_share === null ? '—' : `${num(b.fixed_share * 100, 0)}${NBSP}%`}</td>
+      <td class="fig">${b.lost_per_hour === null ? '—' : num(b.lost_per_hour, 1)}</td><td class="fig">${b.age === null ? '—' : num(b.age, 1)}</td></tr>`).join('');
+    return `<div class="adm-scroll adm-fixstats"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>До базы, км</th><th>Сеансов</th><th>До фикса, обычно</th><th>До фикса, худший</th><th>Времени в фиксе</th><th>Срывов в час фикса</th><th>Возраст поправки, с</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+      <p class="hint">Статистика фикса за ${d.days} дней по ${d.sessions} ${plural(d.sessions, 'сеансу', 'сеансам', 'сеансам')}: считается по сообщениям GGA от роверов; сеансы короче минуты не учитываются.</p>`;
+  }
 
   // ---------- Журнал обрывов связи ----------
   // Обрывы пишет служба приёма, хранит база. Здесь — полосы времени по станциям и список.
@@ -1319,8 +1401,6 @@
   // Шаги выбираются плитками в окне раздела: контур, расчёт, подключение.
 
   const STEPS = { contour: 'Контур', calc: 'Расчёт', ppp: 'PPP-AR', bind: 'Привязка' };
-  const NET_KIND = { local: 'как основная сеть (МСК)', itrf: 'ITRF2014', itrf_msk: 'ITRF2014 + пересчёт в МСК' };
-  const kindChip = (kind) => `<span class="adm-kind is-${kind}">${NET_KIND[kind] || kind}</span>`;
   const STEP_ICON = {
     contour: '<path d="M5 8 13 4l6 6-3 9-9-2Z"/><circle cx="5" cy="8" r="1.3"/><circle cx="13" cy="4" r="1.3"/><circle cx="19" cy="10" r="1.3"/><circle cx="16" cy="19" r="1.3"/><circle cx="7" cy="17" r="1.3"/>',
     calc: '<circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="1.3"/>',
@@ -1360,6 +1440,18 @@
     return `hsl(${Math.round(140 * t)} 85% 55%)`;
   }
   const sd3 = (r) => (r && r.sd ? Math.hypot(...r.sd) : null);
+  // Оценка расчёта по делу, а не по виду решения: на длинных векторах между базами решение почти
+  // всегда плавающее, и это не беда — важно, насколько точен ответ и сходится ли он с сетью.
+  // sd — оценка точности, resid — невязка с уравненной сетью, обе в метрах.
+  function grade(quality, sd, resid) {
+    if (quality === 'reference') return ['опорная', '', 'Координаты заданы: от этой станции считается вся сеть.'];
+    if (quality === 'none' || sd === null || sd === undefined) return ['нет решения', 'is-fail', 'Расчёт не получился: мало наблюдений или они плохие.'];
+    const off = resid || 0;
+    const how = quality === 'fix' ? 'Неоднозначности зафиксированы.' : 'Решение плавающее — для векторов между базами это обычно.';
+    if (sd <= 0.02 && off <= 0.03) return ['хорошо', 'is-online', `${how} Точность до 2 см, с сетью сходится до 3 см.`];
+    if (sd <= 0.05 && off <= 0.08) return ['терпимо', 'is-wait', `${how} Точность до 5 см или невязка до 8 см: для контроля годится, для координат — нет.`];
+    return ['проверить', 'is-fail', `${how} Точность хуже 5 см или невязка больше 8 см: мало наблюдений либо что-то не так со станцией.`];
+  }
 
   // Векторы расчёта на карте: линия от соседа к станции, цвет — точность
   function drawVectors() {
@@ -1390,7 +1482,7 @@
       line.glow = none ? '' : `drop-shadow(0 0 2.5px ${qualityColor(q)})`;
       // Тонкую линию трудно поймать мышью: поверх неё лежит широкая невидимая полоса. Наведение
       // показывает данные вектора, щелчок закрепляет их в окне, пока его не закроют
-      const info = `${esc(v.a)} → ${esc(v.b)}: ${num(v.length_km, 1)} км, ${(QUALITY[v.quality] || ['—'])[0]}${v.sd == null ? '' : `, точность ${mm(v.sd)} мм`}${v.resid == null ? '' : `, невязка ${mm(v.resid)} мм`}${v.closure == null ? '' : `, незамыкание треугольника до ${mm(v.closure)} мм`}${v.minutes ? `, ${v.minutes} мин наблюдений` : ''}`;
+      const info = `${esc(v.a)} → ${esc(v.b)}: ${num(v.length_km, 1)} км, ${grade(v.quality, v.sd, v.resid)[0]}${v.quality === 'fix' ? ' (фикс)' : ''}${v.sd == null ? '' : `, точность ${mm(v.sd)} мм`}${v.resid == null ? '' : `, невязка ${mm(v.resid)} мм`}${v.closure == null ? '' : `, незамыкание треугольника до ${mm(v.closure)} мм`}${v.minutes ? `, ${v.minutes} мин наблюдений` : ''}`;
       const hit = L.polyline([a, b], { color: '#ffffff', weight: 16, opacity: 0.01, lineCap: 'round' });
       hit.bindTooltip(info, { sticky: true, opacity: 1 });
       hit.bindPopup(`<div class="adm-vec">${info.replace(/, /g, '<br>')}</div>`, { closeButton: true, autoPan: false });
@@ -1469,10 +1561,10 @@
       $('sub-status').textContent = subStatus(row);
       body.innerHTML = row.stations.map((code) => {
         const r = got[code] || {};
-        const [text, cls] = QUALITY[r.quality] || ['ждём', ''];
+        const [text, cls, why] = r.quality ? grade(r.quality, sd3(r), r.resid) : ['ждём', '', 'Расчёт ещё не дошёл до этой станции.'];
         const a = acc[code];
         return `<tr><td><span class="fig">${esc(code)}</span></td><td class="fig">${r.vectors === undefined ? '—' : r.vectors}</td>
-          <td><span class="${cls}">${text}</span>${r.note ? `<small class="adm-note"> ${esc(r.note)}</small>` : ''}</td><td class="fig">${r.minutes === undefined ? '—' : r.minutes}</td>
+          <td><i class="adm-grade ${cls}" role="img" aria-label="${text}" title="${esc(`${text[0].toUpperCase()}${text.slice(1)}. ${why}`)}"></i>${r.note ? `<small class="adm-note"> ${esc(r.note)}</small>` : ''}</td><td class="fig">${r.minutes === undefined ? '—' : r.minutes}</td>
           <td class="fig">${r.sd ? `<i class="adm-q" style="background:${qualityColor(sd3(r))}"></i>${mm(sd3(r))}` : '—'}</td><td class="fig">${mm(r.resid)}</td><td class="fig">${mm(r.spread)}</td>
           <td class="fig">${r.x === undefined ? '—' : num(r.x, 4)}</td><td class="fig">${r.y === undefined ? '—' : num(r.y, 4)}</td><td class="fig">${r.z === undefined ? '—' : num(r.z, 4)}</td>
           <td class="fig">${r.shift === undefined || r.shift === null ? '—' : num(r.shift, 3)}</td><td>${a ? `${when(a.at)}` : '—'}</td></tr>`;
@@ -1561,7 +1653,7 @@
     save: 'Сохранить имя, контур и состав подсети.',
     delete: 'Удалить подсеть со всеми её расчётами. Выпущенные из неё сети раздачи останутся и продолжат работать.',
     compute: 'Один расчёт по наблюдениям за последние 6 часов. Ответ через минуту-две. В раздаче ничего не меняет.',
-    start: 'Пересчитывать каждые две минуты по последним 6 часам, пока не остановите. Нужно для слежения за сетью и для зон покрытия на карте.',
+    start: 'Пересчитывать раз в двадцать минут по последним 6 часам, пока не остановите. Нужно для слежения за сетью и для зон покрытия на карте.',
     stop: 'Остановить пересчёт. Последний ответ останется в таблице.',
     run: 'Показать ход расчёта: этапы и строки по каждому вектору.',
     ref: 'Запомнить опорную станцию и её X, Y, Z. От них считаются координаты всех остальных станций.',
@@ -1578,20 +1670,21 @@
     'bind-picked': 'Посчитать параметры по станциям, отмеченным галочками в таблице.',
     'bind-catalog': 'Записать в каталог станций координаты, которые они сейчас передают в потоке, там, где каталог пуст. На раздачу не влияет.',
     'bind-copy': 'Скопировать семь параметров текстом — для ввода в контроллер.',
-    'release-new': 'Создать сеть раздачи: снимок принятых координат и точки подключения ИМЯ_СТАНЦИЯ. Роверы подключаются к ней, а не к подсети.',
     'release-next': 'Обновить сеть свежими координатами из подсети. Перед выпуском покажется, на сколько сдвинется каждая станция.',
     'release-del': 'Удалить сеть и её точки подключения. Подсеть и расчёты останутся.',
     close: 'Закрыть окно. Несохранённая правка контура пропадёт.',
     'net-close': 'Закрыть окно сетей раздачи.',
     export: 'Скачать таблицу координат станций: X, Y, Z, широта и долгота, МСК-66, СК-42 или UTM; высота над эллипсоидом или по геоиду Russia2008.',
     'net-export': 'Скачать таблицу координат, которые раздаёт эта сеть, в нужной системе; высота над эллипсоидом или по геоиду Russia2008.',
-    'net-port': 'Перевести сеть на другой порт раздачи. На своём порту роверы видят в таблице источников только точки этой сети. Пусто или 2101 — общий порт. Порт должен быть проброшен на роутере.',
+    'net-reset': 'Вернуть блоки к тому, из чего сеть собрана сейчас. Действующую версию это не трогает.',
+    'release-new': 'Создать сеть раздачи по собранной схеме: снимок принятых координат и точки подключения ИМЯ_СТАНЦИЯ.',
     'net-new': 'Перейти к выпуску ещё одной сети. Сетей может быть сколько угодно.',
   };
   // Что значит столбец: всплывает при наведении на заголовок
   const TH_HINT = {
     'Векторов': 'Сколько векторов до соседних станций участвует в расчёте этой станции.',
-    'Решение': 'Фиксированное — неоднозначности разрешены, точность миллиметры. Плавающее — не разрешены; на длинных векторах это обычное дело, точность сантиметры.',
+    'Оценка': 'Насколько расчёту станции можно верить: зелёный квадрат — хорошо, жёлтый — терпимо, красный — проверить, пустой — опорная или ещё считается. Хорошо — точность до 2 см и невязка с сетью до 3 см. Терпимо — до 5 и 8 см. Проверить — хуже. Вид решения (фиксированное или плавающее) здесь не главное: между базами оно почти всегда плавающее. Подробности — при наведении на оценку.',
+    'Решение': 'Фиксированное — неоднозначности разрешены, точность миллиметры. Плавающее — не разрешены; точность сантиметры.',
     'Минут': 'Сколько минут наблюдений вошло в расчёт.',
     'Точность, мм': 'Оценка точности координаты после уравнивания сети.',
     'Невязка, мм': 'Насколько худший вектор станции разошёлся с уравненной сетью. Большая невязка — признак плохих наблюдений.',
@@ -1615,7 +1708,7 @@
     'Состояние': 'Идёт ли по этой точке поток роверам.',
     'Раздаётся': 'Сколько точек сети сейчас отдают поток роверам.',
     'Версия': 'Номер выпуска. Каждый выпуск — отдельный снимок координат, к прежнему можно вернуться.',
-    'Что раздаёт': '«Как основная сеть» — в координаты базы уже внесена привязка: пользователь работает в МСК как привык. «ITRF2014» — координаты подсети как есть. «ITRF2014 + пересчёт в МСК» — координаты как есть, а параметры перехода в МСК идут в потоке сообщениями 1021 и 1025.',
+    'Что раздаёт': 'В чём координаты базы и идёт ли пересчёт в потоке: «как основная сеть» — в координаты уже внесена привязка; ITRF — координаты подсети как есть; стрелка показывает, в какую систему ровер пересчитывает сам по сообщениям 1021 и 1025.',
   };
   const hintBox = document.createElement('div');
   hintBox.className = 'adm-tip glass adm-hint';
@@ -1678,7 +1771,7 @@
         ${admin ? `<div class="adm-actions">${running ? '<button class="btn btn-quiet btn-small btn-danger" type="button" data-do="stop">Остановить расчёт</button><button class="btn btn-quiet btn-small" type="button" data-do="run">Ход расчёта</button>' : '<button class="btn btn-primary btn-small" type="button" data-do="compute">Вычислить текущие координаты</button><button class="btn btn-quiet btn-small" type="button" data-do="start">Считать непрерывно</button><button class="btn btn-quiet btn-small" type="button" data-do="ref">Сохранить опорную</button><button class="btn btn-quiet btn-small" type="button" data-do="stream">Взять координаты из потока</button><button class="btn btn-quiet btn-small" type="button" data-do="ref-ppp">Взять опорную из PPP-AR</button>'}
           <button class="btn btn-quiet btn-small" type="button" data-do="accept">Принять координаты</button><button class="btn btn-quiet btn-small" type="button" data-do="export">Таблица координат</button></div>` : ''}
         <p class="hint" id="sub-status"></p>
-        <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Векторов</th><th>Решение</th><th>Минут</th><th>Точность, мм</th><th>Невязка, мм</th><th>Разброс, мм</th><th>X</th><th>Y</th><th>Z</th><th>С потоком, м</th><th>Принято</th></tr></thead><tbody id="sub-rows"></tbody></table></div>
+        <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Векторов</th><th>Оценка</th><th>Минут</th><th>Точность, мм</th><th>Невязка, мм</th><th>Разброс, мм</th><th>X</th><th>Y</th><th>Z</th><th>С потоком, м</th><th>Принято</th></tr></thead><tbody id="sub-rows"></tbody></table></div>
         `;
     } else if (sub.step === 'ppp') {
       const going = row.ppp_state === 'running';
@@ -1860,11 +1953,14 @@
   const WGS = { a: 6378137, f: 1 / 298.257223563 };
   const EXPORT_SYSTEMS = [
     { id: 'xyz-itrf', name: 'X, Y, Z · ITRF2014', frame: 'itrf', kind: 'xyz' },
+    { id: 'xyz-itrf20', name: 'X, Y, Z · ITRF2020', frame: 'itrf', kind: 'xyz', to2020: true },
     { id: 'xyz-net1', name: 'X, Y, Z · основная сеть (смещённые)', frame: 'net1', kind: 'xyz' },
     { id: 'llh', name: 'Широта, долгота · ITRF2014 (WGS-84)', frame: 'itrf', kind: 'llh' },
     { id: 'msk66', name: 'МСК-66 · зоны по 6°', frame: 'net1', kind: 'plane' },
     { id: 'sk42', name: 'СК-42 · Гаусса — Крюгера, зоны по 6°', frame: 'net1', kind: 'plane' },
     { id: 'utm', name: 'UTM · WGS-84', frame: 'itrf', kind: 'plane' },
+    { id: 'gsk2011', name: 'ГСК-2011 · Гаусса — Крюгера, зоны по 6°', frame: 'itrf', kind: 'plane', epoch: true },
+    { id: 'xyz-gsk', name: 'X, Y, Z · ГСК-2011', frame: 'itrf', kind: 'xyz', epoch: true },
   ];
   const exp = { sources: [], name: '', geoid: null, asked: false };
   const expDialog = document.createElement('dialog');
@@ -1875,6 +1971,8 @@
   const linkOf = (p) => ({ dx: p.tx, dy: p.ty, dz: p.tz, rx: p.rx, ry: p.ry, rz: p.rz, scale: p.m });
   function toFrame(xyz, from, to, link) {
     if (from === to) return xyz;
+    // Координаты, уже перенесённые в ГСК-2011, обратно в ITRF здесь не возвращаются
+    if (from === 'gsk' || to === 'gsk') return null;
     if (!link || !window.Transform) return null;
     const L = linkOf(link);
     if (to === 'net1') return window.Transform.apply(L, xyz);
@@ -1882,8 +1980,17 @@
     return xyz.map((v, i) => v - (there[i] - v));
   }
   // Одна точка в выбранной системе: { a, b, zone } — первые две координаты; null — посчитать не из чего
-  function inSystem(sys, xyz) {
+  // year — эпоха координат: нужна системам, закреплённым на свою эпоху (ГСК-2011)
+  function inSystem(sys, xyz, year) {
     const C = window.CoordSys;
+    if (sys.id === 'xyz-gsk') { const g = toGsk2011(xyz, year || yearNow()); return { a: g[0], b: g[1], c: g[2] }; }
+    if (sys.id === 'gsk2011') {
+      const g = C.toGeodetic(toGsk2011(xyz, year || yearNow()), GSK);
+      const zone = Math.floor((g.lon * 180 / Math.PI) / 6) + 1;
+      const p = C.gaussKruger(g.lat, g.lon - (zone * 6 - 3) * Math.PI / 180, GSK);
+      // h — высота над эллипсоидом ГСК-2011: он на полметра меньше общеземного
+      return { a: p.north, b: p.east + zone * 1e6 + 500000, zone, h: g.h };
+    }
     if (sys.kind === 'xyz') return { a: xyz[0], b: xyz[1], c: xyz[2] };
     if (sys.id === 'llh') { const g = C.toGeodetic(xyz, WGS); return { a: g.lat * 180 / Math.PI, b: g.lon * 180 / Math.PI }; }
     if (sys.id === 'msk66') { const p = C.convert('msk66', xyz); return p ? { a: p.north, b: p.east, zone: p.zone, loose: !p.verified } : null; }
@@ -1907,14 +2014,15 @@
     const notes = [];
     const rows = [];
     for (const pt of src.points) {
-      const xyz = toFrame(pt.xyz, src.frame, sys.frame, src.link);
-      if (!xyz) continue;
-      const p = inSystem(sys, xyz);
+      const at = toFrame(pt.xyz, src.frame, sys.frame, src.link);
+      if (!at) continue;
+      const xyz = sys.to2020 ? to2020(at, pt.epoch || yearNow()) : at;
+      const p = inSystem(sys, xyz, pt.epoch);
       if (!p) continue;
       // Высота: над эллипсоидом — в той же рамке, что координаты; по геоиду — всегда от настоящей высоты ITRF
       const real = toFrame(pt.xyz, src.frame, 'itrf', src.link) || pt.xyz;
       const g = window.CoordSys.toGeodetic(geoid ? real : xyz, WGS);
-      let h = g.h;
+      let h = p.h !== undefined && !geoid ? p.h : g.h;
       if (geoid) {
         const n = exp.geoid ? exp.geoid.undulation(g.lat * 180 / Math.PI, g.lon * 180 / Math.PI) : null;
         if (n === null) continue;
@@ -1930,6 +2038,8 @@
       : (sys.id === 'llh' ? [r.code, r.a.toFixed(d), r.b.toFixed(d), r.h.toFixed(4)] : [r.code, r.a.toFixed(4), r.b.toFixed(4), r.h.toFixed(4), String(r.zone)])));
     const about = [`Uralsurvey: ${exp.name}`, `Источник: ${src.name}`, `Система: ${sys.name}`];
     if (sys.kind !== 'xyz') about.push(geoid ? 'Высота: над геоидом Russia2008 (модель EGM2008, сетка 1 минута, тот же файл, что в TBC)' : 'Высота: над эллипсоидом');
+    if (sys.epoch) about.push(`ГСК-2011 закреплена на эпоху 2011,0: координаты перенесены на неё по модели движения Евразийской плиты (ITRF2014), точность 2–3 см`);
+    if (sys.to2020) about.push(`ITRF2020 получена из ITRF2014 по параметрам IERS на эпоху ${(src.points[0] && src.points[0].epoch ? src.points[0].epoch : yearNow()).toFixed(2)}: отличие — миллиметры`);
     if (src.frame !== sys.frame) about.push(`Пересчёт привязкой подсети: ΔX ${src.link.tx}, ΔY ${src.link.ty}, ΔZ ${src.link.tz} м${src.link.rx || src.link.ry || src.link.rz || src.link.m ? `, повороты ${src.link.rx}; ${src.link.ry}; ${src.link.rz}″, масштаб ${src.link.m} ppm` : ''}`);
     if (geoid && sys.kind !== 'xyz' && src.frame === 'net1' && !src.link) about.push('Внимание: высота над эллипсоидом взята от смещённых координат основной сети — привязки подсети нет, поправить нечем (расхождение около 0,2 м)');
     if (notes.includes('zone')) about.push('Внимание: параметры зон 2 и 3 МСК-66 с каталогом не сверены');
@@ -2011,8 +2121,8 @@
     const once = Object.entries(((row.ppp_results || {}).stations) || {}).filter(([, r]) => r.x14 !== undefined);
     const cat = row.stations.map((code) => lists.stations.find((s) => s.code === code)).filter((s) => s && s.x !== null);
     return [
-      { id: 'accepted', name: 'Принятые координаты подсети (ITRF2014)', frame: 'itrf', link, points: acc.map(([code, a]) => ({ code, xyz: [a.x, a.y, a.z] })) },
-      { id: 'mean', name: 'Среднее по суткам PPP-AR (ITRF2014)', frame: 'itrf', link, points: mean.map(([code, m]) => ({ code, xyz: [m.x, m.y, m.z] })) },
+      { id: 'accepted', name: 'Принятые координаты подсети (ITRF2014)', frame: 'itrf', link, points: acc.map(([code, a]) => ({ code, xyz: [a.x, a.y, a.z], epoch: a.epoch || null })) },
+      { id: 'mean', name: 'Среднее по суткам PPP-AR (ITRF2014)', frame: 'itrf', link, points: mean.map(([code, m]) => ({ code, xyz: [m.x, m.y, m.z], epoch: m.epoch || null })) },
       { id: 'once', name: 'Разовый расчёт PPP-AR (ITRF2014)', frame: 'itrf', link, points: once.map(([code, r]) => ({ code, xyz: [r.x14, r.y14, r.z14] })) },
       { id: 'catalog', name: 'Каталог основной сети (смещённые)', frame: 'net1', link, points: cat.map((s) => ({ code: s.code, xyz: [s.x, s.y, s.z] })) },
     ];
@@ -2020,9 +2130,32 @@
 
   // ---------- Сети раздачи ----------
   // Публикация отделена от расчёта: подсеть считает, сеть раздачи отдаёт роверам снимок её
-  // координат. Сетей может быть много; окно — список всех и выбранная под ним.
+  // координат. Сеть собирается из блоков, как блок-схема: подсеть → станции → координаты базы →
+  // пересчёт в потоке → спутники → частота → ближайшая база → порт → ровер. Щелчок по блоку
+  // открывает его варианты; ниже всегда видно, что именно уйдёт роверу.
 
-  const net = { open: false, id: null, pending: {}, pendingKey: '' };
+  const COORDS = { itrf2014: 'ITRF2014', itrf2020: 'ITRF2020', net1: 'как основная сеть', gsk2011: 'ГСК-2011' };
+  const FLOWS = { none: 'не передавать', msk66: 'в МСК-66', sk42: 'в СК-42', gsk2011: 'в ГСК-2011' };
+  const SYSTEMS = { G: 'GPS', R: 'ГЛОНАСС', E: 'Galileo', C: 'BeiDou' };
+  const RATES = [1, 2, 5, 10];
+  const BLOCKS = [
+    ['source', 'Подсеть', '<path d="M5 8 13 4l6 6-3 9-9-2Z"/><circle cx="5" cy="8" r="1.300"/><circle cx="13" cy="4" r="1.300"/><circle cx="19" cy="10" r="1.300"/>'],
+    ['stations', 'Станции', '<path d="M12 4 20 19H4Z"/><circle cx="12" cy="14.500" r="1.400"/>'],
+    ['coords', 'Координаты базы', '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 2.500 3 13.500 0 16M12 4c-3 2.500-3 13.500 0 16"/>'],
+    ['transform', 'Пересчёт в потоке', '<path d="M4 8h11l-3-3M20 16H9l3 3"/><circle cx="18.500" cy="8" r="1.500"/><circle cx="5.500" cy="16" r="1.500"/>'],
+    ['systems', 'Спутники', '<path d="m7 10 3-3 7 7-3 3ZM5 12l-2 2 3 3 2-2M17 5l2-2 3 3-2 2M14 17a4 4 0 0 0 4 4M14 20.500a1 1 0 0 0 1 1"/>'],
+    ['rate', 'Частота', '<circle cx="12" cy="13" r="7.500"/><path d="M12 13V8.500M12 13l3 2M9.500 3h5"/>'],
+    ['near', 'Ближайшая база', '<path d="M12 21s6-5.500 6-10.500a6 6 0 0 0-12 0C6 15.500 12 21 12 21Z"/><circle cx="12" cy="10.500" r="2.200"/>'],
+    ['port', 'Порт', '<rect x="4" y="6" width="16" height="12" rx="2.500"/><path d="M8 10v4M12 10v4M16 10v4"/>'],
+  ];
+  const ROVER_ICON = '<path d="M12 3v9M8.500 12h7M7 21l5-9 5 9"/><circle cx="12" cy="3.500" r="1.200"/>';
+  const recipeOf = (n) => (n.recipe && n.recipe.coords ? n.recipe : { coords: n.kind === 'local' ? 'net1' : 'itrf2014', transform: n.kind === 'itrf_msk' ? 'msk66' : 'none', stations: null, systems: ['G', 'R', 'E', 'C'], rate: 1, near: true });
+  const netLabel = (r) => `${COORDS[r.coords]}${r.transform !== 'none' ? ` → ${FLOWS[r.transform].replace('в ', '')}` : ''}`;
+  const netTone = (r) => (r.coords === 'net1' ? 'local' : (r.transform !== 'none' ? 'itrf_msk' : (r.coords === 'gsk2011' ? 'gsk' : 'itrf')));
+  const netChip = (r) => `<span class="adm-kind is-${netTone(r)}">${netLabel(r)}</span>`;
+  const frameOf = (r) => (r.coords === 'net1' ? 'net1' : (r.coords === 'gsk2011' ? 'gsk' : 'itrf'));
+
+  const net = { open: false, id: null, block: null, draft: null, draftFor: undefined, look: null, lookKey: '', pending: {}, pendingKey: '' };
   const netDialog = document.createElement('dialog');
   netDialog.className = 'dialog adm-dialog adm-panel adm-wide';
   netDialog.id = 'net-dialog';
@@ -2032,11 +2165,11 @@
     const big = Object.entries(look.shifts || {}).filter(([, v]) => v > 0.02).sort((a, b) => b[1] - a[1]);
     return [`Станций: ${look.stations}.`, look.max_shift ? `Наибольший сдвиг координат: ${mm(look.max_shift)} мм (${look.max_station}).` : '',
       big.length ? `Сдвиг больше 2 см: ${big.slice(0, 8).map(([c, v]) => `${c} ${mm(v)} мм`).join(', ')}${big.length > 8 ? ' и другие' : ''}.` : '',
-      look.added.length ? `Новые станции: ${look.added.join(', ')}.` : '', look.gone.length ? `Уйдут из сети: ${look.gone.join(', ')}.` : ''].filter(Boolean).join('\n');
+      look.added.length ? `Новые станции: ${look.added.join(', ')}.` : '', look.gone.length ? `Уйдут из сети: ${look.gone.join(', ')}.` : '',
+      look.params_changed ? 'Изменится состав потока: пересчёт, спутники, частота или ближайшая база.' : ''].filter(Boolean).join('\n');
   };
 
-  // Что изменится при выпуске новой версии: спрашивается у сервера, когда в подсети-источнике
-  // что-то приняли или пересчитали
+  // Что изменится при выпуске новой версии с прежним составом: для столбца «Ждёт выпуска»
   function askPending() {
     const src = (n) => lists.subnets.find((g) => g.id === n.subnet_id) || {};
     const key = lists.networks.map((n) => `${n.id}.${n.version}|${src(n).accepted_at}|${(src(n).link || {}).at}`).join(',');
@@ -2057,58 +2190,209 @@
     if (!p) return '…';
     if (p.error) return `<span class="is-wait">${esc(p.error)}</span>`;
     if (!p.max_shift && !p.added.length && !p.gone.length && !p.params_changed) return 'без изменений';
-    return `<span class="is-wait">${[p.params_changed ? 'новые параметры пересчёта' : '', p.max_shift ? `сдвиг до ${mm(p.max_shift)} мм (${esc(p.max_station)})` : '', p.added.length ? `новых: ${p.added.length}` : '', p.gone.length ? `уйдёт: ${p.gone.length}` : ''].filter(Boolean).join(', ')}</span>`;
+    return `<span class="is-wait">${[p.params_changed ? 'новые параметры' : '', p.max_shift ? `сдвиг до ${mm(p.max_shift)} мм (${esc(p.max_station)})` : '', p.added.length ? `новых: ${p.added.length}` : '', p.gone.length ? `уйдёт: ${p.gone.length}` : ''].filter(Boolean).join(', ')}</span>`;
   };
 
-  // Что передаётся роверу: координаты базы и параметры пересчёта — строками, как они уйдут в поток.
-  // plan — { kind, params, mode, used, epoch, system, area }: из действующего выпуска сети либо
-  // из расчёта «что будет, если выпустить сейчас».
-  function whatHtml(plan, title) {
-    if (!plan || !plan.kind) return '';
-    const kind = plan.kind;
+  // Что передаётся роверу: координаты базы, параметры пересчёта, состав наблюдений — строками,
+  // как они уйдут в поток. plan — из действующего выпуска сети либо из расчёта «что будет».
+  function whatHtml(plan, title, name) {
+    if (!plan || !plan.recipe) return '';
+    const r = plan.recipe;
     const p = plan.params;
     const dl = (pairs) => `<dl class="adm-params">${pairs.map(([k, v]) => `<div><dt>${k}</dt><dd class="fig">${v}</dd></div>`).join('')}</dl>`;
     const fx = (v, d) => Number(v).toFixed(d);
-    const rows = [];
-    rows.push(`<p class="adm-what-row"><b>1005 · координаты базы</b> ${kind === 'local' ? 'в системе основной сети: к координатам ITRF2014 прибавлена привязка' : `ITRF2014${plan.epoch ? `, эпоха ${fx(plan.epoch, 2)}` : ''} — как приняты в подсети`}</p>`);
-    if (kind === 'local' && p) {
-      rows.push(`<p class="adm-what-row"><b>Привязка, внесённая в координаты</b> ITRF2014 → основная сеть, ${plan.mode === 'full' ? 'семь параметров' : 'только сдвиг'}${plan.used && plan.used.length ? `, по станциям ${esc(plan.used.join(', '))}` : ''}</p>`);
-      rows.push(dl([['ΔX, м', fx(p.tx, 4)], ['ΔY, м', fx(p.ty, 4)], ['ΔZ, м', fx(p.tz, 4)], ['ωx, ″', fx(p.rx, 6)], ['ωy, ″', fx(p.ry, 6)], ['ωz, ″', fx(p.rz, 6)], ['m, ppm', fx(p.m, 5)]]));
-      rows.push('<p class="adm-what-row"><b>Сообщения пересчёта</b> не передаются. В ровере МСК настроена как сейчас — пользователю менять нечего.</p>');
+    const rowsHtml = [];
+    const epoch = plan.epoch ? `, эпоха ${fx(plan.epoch, 2)}` : '';
+    const about = { itrf2014: `ITRF2014${epoch} — как приняты в подсети`, itrf2020: `ITRF2020${epoch} — принятые координаты, пересчитанные из ITRF2014 (миллиметры)`,
+      net1: 'в системе основной сети: к координатам ITRF2014 прибавлена привязка', gsk2011: 'ГСК-2011, эпоха 2011,0 — перенесены по движению Евразийской плиты, точность 2–3 см' }[r.coords];
+    rowsHtml.push(`<p class="adm-what-row"><b>1005 · координаты базы</b> ${about}</p>`);
+    if (r.coords === 'net1' && p) {
+      rowsHtml.push(`<p class="adm-what-row"><b>Привязка, внесённая в координаты</b> ITRF2014 → основная сеть, ${plan.mode === 'full' ? 'семь параметров' : 'только сдвиг'}${plan.used && plan.used.length ? `, по станциям ${esc(plan.used.join(', '))}` : ''}</p>`);
+      rowsHtml.push(dl([['ΔX, м', fx(p.tx, 4)], ['ΔY, м', fx(p.ty, 4)], ['ΔZ, м', fx(p.tz, 4)], ['ωx, ″', fx(p.rx, 6)], ['ωy, ″', fx(p.ry, 6)], ['ωz, ″', fx(p.rz, 6)], ['m, ppm', fx(p.m, 5)]]));
     }
-    const t = kind !== 'local' && p && window.Transform ? window.Transform.plan(p, plan.system || 'msk66', plan.area) : null;
-    if (kind === 'itrf') rows.push(`<p class="adm-what-row"><b>Сообщения пересчёта</b> не передаются. Ровер получает координаты в ITRF2014.${t ? ' Чтобы получить из них МСК, в контроллер вручную вводятся параметры ниже.' : ' Привязки в подсети нет: параметры перехода в МСК не посчитаны.'}</p>`);
+    const flow = plan.transform && window.Transform ? window.Transform.plan(plan.transform) : null;
+    // Справочно — переход в МСК-66 для ручного ввода в контроллер, когда сеть отдаёт чистый ITRF
+    const hint = !flow && r.transform === 'none' && r.coords === 'itrf2014' && p && window.Transform ? window.Transform.plan({ target: 'msk66', link: p }) : null;
+    if (r.transform === 'none') rowsHtml.push(`<p class="adm-what-row"><b>Сообщения пересчёта</b> не передаются.${r.coords === 'net1' ? ' В ровере МСК настроена как сейчас — пользователю менять нечего.' : (hint ? ' Чтобы получить из этих координат МСК-66, в контроллер вручную вводятся параметры ниже.' : '')}</p>`);
+    const t = flow || hint;
     if (t) {
       const h = t.helmert;
-      rows.push(`<p class="adm-what-row"><b>${kind === 'itrf_msk' ? '1021 · семь параметров' : 'Семь параметров (справочно)'}</b> ITRF2014 → ${esc(t.datum)}, эллипсоид Красовского; привязка подсети и параметры ГОСТ сложены вместе</p>`);
-      rows.push(dl([['dX, м', fx(h.dx, 3)], ['dY, м', fx(h.dy, 3)], ['dZ, м', fx(h.dz, 3)], ['Rx, ″', fx(h.rx, 5)], ['Ry, ″', fx(h.ry, 5)], ['Rz, ″', fx(h.rz, 5)], ['масштаб, ppm', fx(h.scale, 5)],
-        ['эллипсоид ITRF: a, b', `${fx(h.sourceA, 3)} · ${fx(h.sourceB, 3)}`], ['Красовского: a, b', `${fx(h.targetA, 3)} · ${fx(h.targetB, 3)}`]]));
-      rows.push(`<p class="adm-what-row"><b>${kind === 'itrf_msk' ? '1025 · проекция' : 'Проекция (справочно)'}</b> ${esc(t.system)}, поперечная Меркатора (Гаусса — Крюгера)${kind === 'itrf_msk' ? '; роверу уходит зона по его положению' : ''}</p>`);
-      rows.push(`<div class="adm-scroll"><table class="messages srv-table adm-rows adm-static adm-zones"><thead><tr><th>Зона</th><th>Осевой меридиан</th><th>Широта начала</th><th>Масштаб</th><th>Смещение на восток, м</th><th>Смещение на север, м</th><th></th></tr></thead><tbody>${t.projections.map((z) => `<tr><td class="fig">${z.zone}</td><td class="fig">${dms(z.lon0, 'lon', 0).text}</td><td class="fig">0°</td><td class="fig">${fx(z.scale, 6)}</td><td class="fig">${fx(z.falseEasting, 3)}</td><td class="fig">${fx(z.falseNorthing, 3)}</td><td>${z.verified ? '' : '<span class="is-wait">с каталогом не сверена</span>'}</td></tr>`).join('')}</tbody></table></div>`);
-      if (kind === 'itrf_msk') {
+      rowsHtml.push(`<p class="adm-what-row"><b>${flow ? '1021 · семь параметров' : 'Семь параметров (справочно)'}</b> ${esc(h.sourceName)} → ${esc(t.datum)}${t.target === 'gsk2011' ? ': перенос на эпоху 2011,0 по движению плиты и переход к ITRF2008' : ', эллипсоид Красовского; привязка подсети и параметры ГОСТ сложены вместе'}</p>`);
+      rowsHtml.push(dl([['dX, м', fx(h.dx, 3)], ['dY, м', fx(h.dy, 3)], ['dZ, м', fx(h.dz, 3)], ['Rx, ″', fx(h.rx, 5)], ['Ry, ″', fx(h.ry, 5)], ['Rz, ″', fx(h.rz, 5)], ['масштаб, ppm', fx(h.scale, 5)],
+        ['эллипсоид ITRF: a, b', `${fx(h.sourceA, 3)} · ${fx(h.sourceB, 3)}`], [`${t.target === 'gsk2011' ? 'ГСК-2011' : 'Красовского'}: a, b`, `${fx(h.targetA, 3)} · ${fx(h.targetB, 3)}`]]));
+      rowsHtml.push(`<p class="adm-what-row"><b>${flow ? '1025 · проекция' : 'Проекция (справочно)'}</b> ${esc(t.system)}, поперечная Меркатора (Гаусса — Крюгера)${flow ? '; роверу уходит зона по его положению' : ''}</p>`);
+      rowsHtml.push(`<div class="adm-scroll"><table class="messages srv-table adm-rows adm-static adm-zones"><thead><tr><th>Зона</th><th>Осевой меридиан</th><th>Широта начала</th><th>Масштаб</th><th>Смещение на восток, м</th><th>Смещение на север, м</th><th></th></tr></thead><tbody>${t.projections.map((z) => `<tr><td class="fig">${z.zone}</td><td class="fig">${dms(z.lon0, 'lon', 0).text}</td><td class="fig">0°</td><td class="fig">${fx(z.scale, 6)}</td><td class="fig">${fx(z.falseEasting, 3)}</td><td class="fig">${fx(z.falseNorthing, 3)}</td><td>${z.verified ? '' : '<span class="is-wait">с каталогом не сверена</span>'}</td></tr>`).join('')}</tbody></table></div>`);
+      if (flow) {
         const a = h.area;
-        rows.push(`<p class="adm-what-row"><b>Как передаётся</b> пара 1021 + 1025 при подключении и каждые 10 с. Область действия: ${fx(a.lat - a.dLat, 1)}–${fx(a.lat + a.dLat, 1)}° с. ш., ${fx(a.lon - a.dLon, 1)}–${fx(a.lon + a.dLon, 1)}° в. д. В ровере включается «система координат из сети». Знак поворотов и признак набора сообщений на живом приёмнике ещё не проверены.</p>`);
+        rowsHtml.push(`<p class="adm-what-row"><b>Как передаётся</b> пара 1021 + 1025 при подключении и каждые 10 с. Область действия: ${fx(a.lat - a.dLat, 1)}–${fx(a.lat + a.dLat, 1)}° с. ш., ${fx(a.lon - a.dLon, 1)}–${fx(a.lon + a.dLon, 1)}° в. д. В ровере включается «система координат из сети». Знак поворотов и признак набора сообщений на живом приёмнике ещё не проверены.</p>`);
       }
     }
-    return `<div class="adm-what is-${kind}"><p class="adm-what-head">${title} ${kindChip(kind)}</p>${rows.join('')}</div>`;
+    const f = plan.filter || { systems: r.systems, rate: r.rate };
+    rowsHtml.push(`<p class="adm-what-row"><b>Наблюдения</b> ${f.systems.map((c) => SYSTEMS[c]).join(', ')} — ${f.rate > 1 ? `раз в ${f.rate} с` : 'каждую секунду'}${f.systems.length < 4 || f.rate > 1 ? '; остальное из потока базы роверу не идёт' : ', как шлёт база'}.</p>`);
+    const codes = plan.codes || Object.keys(plan.stations || {});
+    rowsHtml.push(`<p class="adm-what-row"><b>Точки подключения</b> ${codes.length} ${plural(codes.length, 'станция', 'станции', 'станций')}: ${esc(name || 'ИМЯ')}_СТАНЦИЯ${(plan.near !== undefined ? plan.near : r.near) ? `, и ${esc(name || 'ИМЯ')}_NEAR — ближайшая база по положению ровера` : '; точки ближайшей базы нет'}.</p>`);
+    return `<div class="adm-what is-${netTone(r)}"><p class="adm-what-head">${title} ${netChip(r)}</p>${rowsHtml.join('')}</div>`;
   }
 
-  // Живая часть окна: список сетей и точки выбранной. Поля формы новой сети не трогаются.
+  // Черновик: из чего собирается сеть в окне. Для готовой сети — её состав, который можно поменять
+  function draftFor(n) {
+    const key = n ? `${n.id}.${n.version}` : 'new';
+    if (net.draft && net.draftFor === key) return net.draft;
+    const ready = lists.subnets.filter((g) => Object.keys(g.accepted || {}).length);
+    net.draft = n ? { name: n.name, title: n.title, subnet_id: n.subnet_id, port: n.port || '', recipe: JSON.parse(JSON.stringify(recipeOf(n))) }
+      : { name: '', title: '', subnet_id: ready.length ? ready[0].id : null, port: '', recipe: { coords: 'itrf2014', transform: 'none', stations: null, systems: ['G', 'R', 'E', 'C'], rate: 1, near: true } };
+    net.draftFor = key;
+    net.look = null;
+    net.lookKey = '';
+    return net.draft;
+  }
+  const draftSubnet = () => lists.subnets.find((g) => g.id === net.draft.subnet_id) || null;
+  // Правила конструктора: что нельзя собрать и почему
+  function blockRules() {
+    const g = draftSubnet();
+    const bound = Boolean(g && g.link && g.link.params);
+    const r = net.draft.recipe;
+    return {
+      bound,
+      coords: { net1: bound ? '' : 'нужна привязка в подсети' },
+      transform: {
+        msk66: !['itrf2014', 'itrf2020'].includes(r.coords) ? 'только при координатах в ITRF' : (bound ? '' : 'нужна привязка в подсети'),
+        sk42: !['itrf2014', 'itrf2020'].includes(r.coords) ? 'только при координатах в ITRF' : (bound ? '' : 'нужна привязка в подсети'),
+        gsk2011: !['itrf2014', 'itrf2020'].includes(r.coords) ? 'только при координатах в ITRF' : '',
+      },
+    };
+  }
+  // Несовместимый выбор исправляется сам: пересчёт снимается, если координаты уже пересчитаны
+  function fixDraft() {
+    const r = net.draft.recipe;
+    const rules = blockRules();
+    if (rules.coords[r.coords]) r.coords = 'itrf2014';
+    if (r.transform !== 'none' && blockRules().transform[r.transform]) r.transform = 'none';
+    const g = draftSubnet();
+    if (r.stations && g) { r.stations = r.stations.filter((c) => (g.accepted || {})[c]); if (!r.stations.length) r.stations = null; }
+  }
+
+  // Блок-схема: значение каждого блока одной строкой
+  function blockValue(id, n) {
+    const d = net.draft;
+    const r = d.recipe;
+    const g = draftSubnet();
+    const all = g ? Object.keys(g.accepted || {}).length : 0;
+    if (id === 'source') return g ? `${esc(g.name)} · ${all} ст.` : (n && !n.subnet_id ? 'удалена' : 'нет подсети');
+    if (id === 'stations') return r.stations ? `${r.stations.length} из ${all}` : `все ${all}`;
+    if (id === 'coords') return COORDS[r.coords];
+    if (id === 'transform') return FLOWS[r.transform];
+    if (id === 'systems') return r.systems.length === 4 ? 'все четыре' : r.systems.map((c) => SYSTEMS[c]).join(', ');
+    if (id === 'rate') return r.rate > 1 ? `раз в ${r.rate} с` : 'каждую секунду';
+    if (id === 'near') return r.near ? 'есть' : 'нет';
+    return String(d.port || '2101');
+  }
+  const blockTone = (id) => {
+    const r = net.draft.recipe;
+    if (id === 'coords') return r.coords === 'net1' ? 'local' : (r.coords === 'gsk2011' ? 'gsk' : 'itrf');
+    if (id === 'transform') return r.transform === 'none' ? 'off' : 'itrf_msk';
+    if (id === 'near') return r.near ? 'plain' : 'off';
+    return 'plain';
+  };
+  function flowHtml(n) {
+    const was = n ? { ...recipeOf(n), port: n.port || '' } : null;
+    const changed = (id) => {
+      if (!was) return false;
+      const r = net.draft.recipe;
+      if (id === 'port') return String(net.draft.port || '') !== String(was.port);
+      if (id === 'source') return false;
+      return JSON.stringify(r[id]) !== JSON.stringify(was[id]);
+    };
+    return `<div class="adm-flow">${BLOCKS.map(([id, title, icon]) => `<button class="adm-block is-${blockTone(id)} ${changed(id) ? 'is-changed' : ''}" type="button" data-block="${id}" aria-current="${net.block === id}" ${isAdmin() ? '' : 'disabled'}>
+      <svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span class="adm-block-name">${title}</span><span class="adm-block-value">${blockValue(id, n)}</span></button><i class="adm-flow-link"></i>`).join('')}
+      <span class="adm-block is-end"><svg viewBox="0 0 24 24" aria-hidden="true">${ROVER_ICON}</svg><span class="adm-block-name">Ровер</span><span class="adm-block-value">получает</span></span></div>`;
+  }
+
+  // Варианты открытого блока
+  function optionsHtml(n) {
+    const id = net.block;
+    if (!id) return '<p class="hint adm-flow-hint">Щёлкните блок, чтобы поменять его. Схема читается слева направо: что берём, как меняем, что получает ровер.</p>';
+    const d = net.draft;
+    const r = d.recipe;
+    const g = draftSubnet();
+    const rules = blockRules();
+    const tile = (attr, value, text, on, why, tone) => `<button class="adm-opt ${tone ? `is-${tone}` : ''}" type="button" data-opt="${attr}" data-value="${esc(String(value))}" aria-current="${on}" ${why ? 'disabled' : ''}>${text}${why ? `<small>${why}</small>` : ''}</button>`;
+    let body = '';
+    let note = '';
+    if (id === 'source') {
+      const ready = lists.subnets.filter((x) => Object.keys(x.accepted || {}).length);
+      body = n ? `<span class="adm-opt" aria-current="true">${esc(n.subnet || 'подсеть удалена')}</span>` : (ready.map((x) => tile('subnet', x.id, `${esc(x.name)}<small>принято ${Object.keys(x.accepted).length}${x.link && x.link.params ? ', привязка есть' : ', без привязки'}</small>`, x.id === d.subnet_id)).join('') || '<span class="hint">Ни в одной подсети нет принятых координат: примите их на шаге «PPP-AR».</span>');
+      note = n ? 'Подсеть-источник у готовой сети не меняется: для другой подсети выпустите новую сеть.' : 'Из какой подсети брать принятые координаты. Подсеть остаётся чистым расчётом.';
+    } else if (id === 'stations') {
+      const codes = g ? Object.keys(g.accepted || {}).sort() : [];
+      body = `${tile('all', 1, `Все станции подсети<small>${codes.length}</small>`, !r.stations)}${codes.map((c) => `<label class="adm-opt adm-opt-check"><input type="checkbox" data-pick="${esc(c)}" ${!r.stations || r.stations.includes(c) ? 'checked' : ''}><span class="fig">${esc(c)}</span></label>`).join('')}`;
+      note = 'Какие станции войдут в сеть. У каждой будет своя точка подключения.';
+    } else if (id === 'coords') {
+      body = Object.entries(COORDS).map(([k, name]) => tile('coords', k, name, r.coords === k, rules.coords[k] || '', k === 'net1' ? 'local' : (k === 'gsk2011' ? 'gsk' : 'itrf'))).join('');
+      note = { itrf2014: 'Настоящие координаты станций, как приняты в подсети.', itrf2020: 'То же в ITRF2020: отличие от ITRF2014 — миллиметры.',
+        net1: 'В координаты уже внесена привязка: ровер работает в МСК как сейчас, ничего настраивать не надо.',
+        gsk2011: 'ГСК-2011 закреплена на 2011 год: координаты перенесены по движению плиты, точность 2–3 см.' }[r.coords];
+    } else if (id === 'transform') {
+      body = Object.entries(FLOWS).map(([k, name]) => tile('transform', k, name, r.transform === k, k === 'none' ? '' : rules.transform[k], k === 'none' ? '' : 'itrf_msk')).join('');
+      note = r.transform === 'none' ? 'Сообщения пересчёта роверу не идут: он получает координаты базы как есть.' : 'Роверу идут сообщения 1021 и 1025: он сам получает выбранную систему, если в нём включена «система координат из сети».';
+    } else if (id === 'systems') {
+      body = Object.entries(SYSTEMS).map(([k, name]) => tile('system', k, name, r.systems.includes(k), '', '')).join('');
+      note = 'Какие спутниковые системы отдавать. GPS обязателен. Убрать лишнее полезно для старых приёмников и слабой связи.';
+    } else if (id === 'rate') {
+      body = RATES.map((v) => tile('rate', v, v > 1 ? `раз в ${v} с` : 'каждую секунду', r.rate === v)).join('');
+      note = 'Как часто отдавать наблюдения. Реже — меньше трафика, но фикс приходит медленнее; для работы в движении оставляйте каждую секунду.';
+    } else if (id === 'near') {
+      body = `${tile('near', 1, `есть<small>${esc((d.name || 'ИМЯ').toUpperCase())}_NEAR</small>`, r.near)}${tile('near', 0, 'нет', !r.near)}`;
+      note = 'Точка, на которой ровер сам получает ближайшую станцию сети по своему положению.';
+    } else {
+      body = `<label class="adm-port"><span>порт раздачи</span><input id="net-port" type="text" inputmode="numeric" maxlength="5" autocomplete="off" value="${esc(String(d.port || ''))}" placeholder="2101"></label>`;
+      note = 'Пусто или 2101 — общий порт вместе с основной сетью. На своём порту ровер видит в таблице источников только точки этой сети. Порт должен быть проброшен на роутере; 2110–2159 заняты приёмом станций.';
+    }
+    return `<div class="adm-flow-opts">${body}</div><p class="hint adm-flow-hint">${note}</p>`;
+  }
+
+  // Что получится, если выпустить сейчас: спрашивается у сервера при каждой правке блоков
+  function askLook(n) {
+    const d = net.draft;
+    if (!d.subnet_id) { net.look = { error: 'Нет подсети с принятыми координатами.' }; return; }
+    const key = JSON.stringify([d.subnet_id, d.recipe, n ? `${n.id}.${n.version}` : 'new', (draftSubnet() || {}).accepted_at, ((draftSubnet() || {}).link || {}).at]);
+    if (net.lookKey === key) return;
+    net.lookKey = key;
+    api('/api/admin/networks/preview', 'POST', n ? { network_id: n.id, recipe: d.recipe } : { subnet_id: d.subnet_id, recipe: d.recipe }).then((res) => {
+      if (net.lookKey !== key) return;
+      net.look = res.ok ? res.data : { error: res.error || 'Не посчитано.' };
+      if (net.open) lookLive();
+    });
+  }
+  function lookLive() {
+    const box = $('net-what');
+    if (!box) return;
+    const n = lists.networks.find((x) => x.id === net.id) || null;
+    const look = net.look;
+    const name = (net.draft.name || (n ? n.name : '')).toUpperCase();
+    const touched = n && (JSON.stringify(net.draft.recipe) !== JSON.stringify(recipeOf(n)) || String(net.draft.port || '') !== String(n.port || ''));
+    let html = n ? whatHtml({ ...n.release, recipe: recipeOf(n) }, 'Передаётся сейчас:', n.name) : '';
+    if (!look) html += '<p class="hint">Считаем, что получится…</p>';
+    else if (look.error) html += `<p class="notice">${esc(look.error)}</p>`;
+    else if (!n) html += `${whatHtml(look.plan, 'Будет передаваться:', name)}`;
+    else if (touched || look.params_changed || look.max_shift || look.added.length || look.gone.length) html += `${whatHtml(look.plan, 'После выпуска новой версии будет:', name)}<p class="hint">${esc(shiftText(look)).replace(/\n/g, ' ')}</p>`;
+    if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
+  }
+
+  // Живая часть окна: список сетей и точки выбранной. Поля ввода не трогаются.
   function netLive() {
     if (!net.open) return;
     askPending();
     const list = $('net-rows');
     if (list) {
       list.innerHTML = lists.networks.map((n) => `<tr data-net-pick="${n.id}" aria-selected="${n.id === net.id}"><td><span class="fig">${esc(n.name)}</span>${n.title ? ` <small class="adm-note">${esc(n.title)}</small>` : ''}</td>
-        <td>${n.subnet ? `<span class="fig">${esc(n.subnet)}</span>` : '<span class="is-wait">удалена</span>'}</td><td>${kindChip(n.kind)}</td><td class="fig">${n.port || 2101}${n.port ? '' : ' <small class="adm-note">общий</small>'}</td><td class="fig">${n.version}</td><td>${when(n.release.at)}</td>
+        <td>${n.subnet ? `<span class="fig">${esc(n.subnet)}</span>` : '<span class="is-wait">удалена</span>'}</td><td>${netChip(recipeOf(n))}</td><td class="fig">${n.port || 2101}${n.port ? '' : ' <small class="adm-note">общий</small>'}</td><td class="fig">${n.version}</td><td>${when(n.release.at)}</td>
         <td class="fig">${liveCount(n)} из ${n.points.length}</td><td>${waitText(n)}</td></tr>`).join('') || '<tr><td colspan="8">Сетей раздачи пока нет</td></tr>';
     }
     const n = lists.networks.find((x) => x.id === net.id);
     const pts = $('net-points');
     if (pts && n) {
-      const p = net.pending[n.id] || {};
-      const next = p.plan && (p.params_changed || (n.kind === 'local' && JSON.stringify(p.plan.params) !== JSON.stringify(n.release.params))) ? whatHtml(p.plan, 'После выпуска новой версии будет:') : '';
-      if ($('net-next').dataset.html !== next) { $('net-next').dataset.html = next; $('net-next').innerHTML = next; }
+      const p = net.look && !net.look.error ? net.look : {};
       pts.innerHTML = n.points.map((pt) => {
         const lp = live ? live.points.find((x) => x.name === pt.name) : null;
         const r = n.release.stations[pt.station] || {};
@@ -2119,69 +2403,40 @@
           <td class="fig">${sh === undefined ? '—' : (sh ? `<span class="is-wait">${mm(sh)}</span>` : '0')}</td></tr>`;
       }).join('');
     }
+    lookLive();
   }
 
   function renderNet() {
     const admin = isAdmin();
     const n = lists.networks.find((x) => x.id === net.id) || null;
     if (!n) net.id = null;
-    const ready = lists.subnets.filter((g) => Object.keys(g.accepted || {}).length);
-    let body = `<p class="adm-lead"><b>Сети раздачи.</b> То, к чему подключаются роверы: точки подключения с согласованными координатами. Сеть берёт снимок координат подсети; подсеть остаётся чистым расчётом, и её пересчёты раздачу не меняют, пока не выпущена новая версия. Сетей может быть сколько угодно, из одной подсети — несколько.</p>
+    const d = draftFor(n);
+    fixDraft();
+    askLook(n);
+    const back = n ? n.history.filter((h) => h.version !== n.version) : [];
+    let body = `<p class="adm-lead"><b>Сети раздачи.</b> То, к чему подключаются роверы. Сеть собирается из блоков и берёт снимок координат подсети; подсеть остаётся чистым расчётом. Сетей может быть сколько угодно.</p>
       <div class="adm-scroll adm-net-list"><table class="messages srv-table adm-rows"><thead><tr><th>Сеть</th><th>Подсеть-источник</th><th>Что раздаёт</th><th>Порт</th><th>Версия</th><th>Выпущена</th><th>Раздаётся</th><th>Ждёт выпуска</th></tr></thead><tbody id="net-rows"></tbody></table></div>`;
-    if (n) {
-      const back = n.history.filter((h) => h.version !== n.version);
-      body += `<p class="adm-lead"><b>${esc(n.name)}${n.title ? ` · ${esc(n.title)}` : ''}.</b> ${kindChip(n.kind)}${n.release.restored ? `, координаты как в версии ${n.release.restored}` : ''}. Точки подключения: ${esc(n.name)}_СТАНЦИЯ. Порт раздачи: <b class="fig">${n.port || 2101}</b>${n.port ? ' — на нём роверы видят только точки этой сети' : ' — общий, вместе с основной сетью'}. Доступ — по тарифу, где названа эта сеть.</p>
-        ${admin ? `<div class="adm-actions"><button class="btn btn-primary btn-small" type="button" data-do="release-next" ${n.subnet_id ? '' : 'disabled'}>Выпустить версию ${n.version + 1}</button>
+    body += n ? `<p class="adm-lead"><b>${esc(n.name)}${n.title ? ` · ${esc(n.title)}` : ''}.</b> Версия ${n.version}${n.release.restored ? `, состав как в версии ${n.release.restored}` : ''}. Поменяйте блок и выпустите новую версию — до этого роверы получают прежнее.</p>`
+      : `<p class="adm-lead"><b>Новая сеть.</b> Соберите её из блоков и выпустите.</p>${admin ? `<div class="adm-sub-form is-release"><label class="field"><span>Имя сети латиницей</span><input id="net-name" type="text" autocomplete="off" maxlength="12" placeholder="N3" value="${esc(d.name)}"></label>
+        <label class="field"><span>Название</span><input id="net-title" type="text" autocomplete="off" maxlength="80" value="${esc(d.title)}"></label></div>` : ''}`;
+    body += `${flowHtml(n)}<div id="net-options">${optionsHtml(n)}</div>`;
+    if (admin) {
+      body += `<div class="adm-actions">${n ? `<button class="btn btn-primary btn-small" type="button" data-do="release-next" ${n.subnet_id ? '' : 'disabled'}>Выпустить версию ${n.version + 1}</button>
           ${back.length ? `<select class="adm-pick" id="net-back"><option value="">Вернуть версию…</option>${back.map((h) => `<option value="${h.version}">${h.version} — ${when(h.at)}</option>`).join('')}</select>` : ''}
-          <label class="adm-port"><span>порт</span><input id="net-port-edit" type="text" inputmode="numeric" maxlength="5" value="${n.port || ''}" placeholder="2101"></label><button class="btn btn-quiet btn-small" type="button" data-do="net-port">Сменить порт</button><button class="btn btn-quiet btn-small" type="button" data-do="net-export">Таблица координат</button>
-          <button class="btn btn-quiet btn-small btn-danger" type="button" data-do="release-del">Удалить сеть</button><button class="btn btn-quiet btn-small" type="button" data-do="net-new">Новая сеть</button></div>` : ''}
-        ${whatHtml(n.release, 'Передаётся сейчас:')}
-        <div id="net-next"></div>
-        <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Точка подключения</th><th>Состояние</th><th>X</th><th>Y</th><th>Z</th><th>Сдвиг при выпуске, мм</th></tr></thead><tbody id="net-points"></tbody></table></div>`;
-    } else if (admin) {
-      body += `<p class="adm-todo">${['Дайте сети имя', 'Выберите подсеть с принятыми координатами', 'Выберите, что раздавать', 'Выпустите и назовите сеть в тарифе'].map((t, i) => `<span><i>${i + 1}</i>${t}</span>`).join('')}</p>
-        ${ready.length ? `<div class="adm-sub-form is-release"><label class="field"><span>Имя сети латиницей</span><input id="net-name" type="text" autocomplete="off" maxlength="12" placeholder="N3"></label>
-          <label class="field"><span>Название</span><input id="net-title" type="text" autocomplete="off" maxlength="80"></label>
-          <label class="field"><span>Подсеть-источник</span><select id="net-subnet">${ready.map((g) => `<option value="${g.id}">${esc(g.name)} · принято ${Object.keys(g.accepted).length}${g.link && g.link.params ? '' : ' · без привязки'}</option>`).join('')}</select></label>
-          <label class="field"><span>Что раздаёт</span><select id="net-kind"><option value="local">Как основная сеть (МСК)</option><option value="itrf">ITRF2014</option><option value="itrf_msk">ITRF2014 + пересчёт в МСК</option></select></label>
-          <label class="field"><span>Порт раздачи</span><input id="net-port" type="text" inputmode="numeric" maxlength="5" autocomplete="off" placeholder="2101 — общий"></label>
-          <button class="btn btn-primary btn-small" type="button" data-do="release-new">Выпустить сеть</button></div>
-          <div id="net-what"></div>`
-    : '<p class="hint">Выпускать пока не из чего: ни в одной подсети нет принятых координат. Примите их в подсети на шаге «PPP-AR».</p>'}`;
+          <button class="btn btn-quiet btn-small" type="button" data-do="net-reset">Сбросить правки</button><button class="btn btn-quiet btn-small" type="button" data-do="net-export">Таблица координат</button>
+          <button class="btn btn-quiet btn-small btn-danger" type="button" data-do="release-del">Удалить сеть</button><button class="btn btn-quiet btn-small" type="button" data-do="net-new">Новая сеть</button>`
+        : '<button class="btn btn-primary btn-small" type="button" data-do="release-new">Выпустить сеть</button>'}</div>`;
     }
+    body += '<div id="net-what"></div>';
+    if (n) body += '<div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Станция</th><th>Точка подключения</th><th>Состояние</th><th>X</th><th>Y</th><th>Z</th><th>Сдвиг при выпуске, мм</th></tr></thead><tbody id="net-points"></tbody></table></div>';
     netDialog.innerHTML = `<button class="icon-btn adm-close" type="button" data-do="net-close" title="Закрыть">×</button><h2><span>Сети раздачи</span><span class="fig adm-note">${lists.networks.length || ''}</span></h2><div>${body}</div>`;
-    kindBySubnet();
     netLive();
-  }
-
-  // Без привязки подсеть может дать только координаты ITRF2014: вид «как основная сеть» гаснет
-  function kindBySubnet() {
-    const pick = $('net-subnet');
-    if (!pick) return;
-    const src = lists.subnets.find((g) => g.id === Number(pick.value));
-    const bound = Boolean(src && src.link && src.link.params);
-    for (const [value, name] of [['local', 'Как основная сеть (МСК)'], ['itrf_msk', 'ITRF2014 + пересчёт в МСК']]) {
-      const option = $('net-kind').querySelector(`[value="${value}"]`);
-      option.disabled = !bound;
-      option.textContent = bound ? name : `${name} — нужна привязка в подсети`;
-    }
-    if (!bound) $('net-kind').value = 'itrf';
-    showDraft();
-  }
-
-  // До выпуска: что будет передаваться при выбранных подсети и виде — спрашивается у сервера
-  async function showDraft() {
-    const box = $('net-what');
-    if (!box) return;
-    const ask = `${$('net-subnet').value}|${$('net-kind').value}`;
-    net.draftAsk = ask;
-    const res = await api('/api/admin/networks/preview', 'POST', { subnet_id: Number($('net-subnet').value), kind: $('net-kind').value });
-    if (net.draftAsk !== ask || !$('net-what')) return;
-    $('net-what').innerHTML = res.ok ? `${whatHtml(res.data.plan, 'Будет передаваться:')}<p class="hint">Станций в выпуске: ${res.data.stations}.</p>` : `<p class="hint is-wait">${esc(res.error || 'Не посчитано.')}</p>`;
   }
 
   function openNet(id) {
     net.id = id;
+    net.block = null;
+    net.draftFor = undefined;
     net.open = true;
     if ($('sub-dialog').open) $('sub-dialog').close();
     if (!netDialog.open) netDialog.show();
@@ -2195,50 +2450,71 @@
     if (nets.ok) lists.networks = nets.data;
     if (subs.ok) { lists.subnets = subs.data; if (view === 'subnets') rows = subs.data; }
     net.pendingKey = '';
+    net.draftFor = undefined;
   }
-  // Выпуск: новая сеть, следующая версия, возврат, удаление. Перед выпуском показывается,
-  // что изменится для роверов.
+  // Поля ввода пишутся в черновик сразу: перерисовка окна их не сбивает
+  netDialog.addEventListener('input', (event) => {
+    if (!net.draft) return;
+    if (event.target.id === 'net-name') net.draft.name = event.target.value;
+    if (event.target.id === 'net-title') net.draft.title = event.target.value;
+    if (event.target.id === 'net-port') { net.draft.port = event.target.value.trim(); const v = netDialog.querySelector('[data-block="port"] .adm-block-value'); if (v) v.textContent = net.draft.port || '2101'; }
+  });
   netDialog.addEventListener('click', async (event) => {
     const pick = event.target.closest('[data-net-pick]');
-    if (pick) { net.id = Number(pick.dataset.netPick); renderNet(); renderRail(); return; }
+    if (pick) { openNet(Number(pick.dataset.netPick)); return; }
+    const block = event.target.closest('[data-block]');
+    if (block) { net.block = net.block === block.dataset.block ? null : block.dataset.block; renderNet(); return; }
+    const opt = event.target.closest('[data-opt]');
+    if (opt && net.draft) {
+      const r = net.draft.recipe;
+      const v = opt.dataset.value;
+      if (opt.dataset.opt === 'subnet') { net.draft.subnet_id = Number(v); r.stations = null; }
+      if (opt.dataset.opt === 'all') r.stations = null;
+      if (opt.dataset.opt === 'coords') r.coords = v;
+      if (opt.dataset.opt === 'transform') r.transform = v;
+      if (opt.dataset.opt === 'rate') r.rate = Number(v);
+      if (opt.dataset.opt === 'near') r.near = v === '1';
+      if (opt.dataset.opt === 'system' && v !== 'G') r.systems = Object.keys(SYSTEMS).filter((c) => (c === v ? !r.systems.includes(c) : r.systems.includes(c)));
+      if (opt.dataset.opt === 'system' && v === 'G') toast('GPS обязателен: без него ровер не работает.', 3000);
+      renderNet();
+      return;
+    }
     const btn = event.target.closest('[data-do]');
     if (!btn) return;
     const act = btn.dataset.do;
     const n = lists.networks.find((x) => x.id === net.id);
+    const d = net.draft;
     if (act === 'net-close') { netDialog.close(); return; }
-    if (act === 'net-new') { net.id = null; renderNet(); renderRail(); return; }
+    if (act === 'net-new') { openNet(null); return; }
+    if (act === 'net-reset') { net.draftFor = undefined; renderNet(); return; }
     if (act === 'net-export' && n) {
-      openExport([{ id: 'release', name: `Сеть ${n.name}, версия ${n.version} — то, что раздаётся`, frame: n.kind === 'local' ? 'net1' : 'itrf', link: n.release.params || null,
-        points: Object.entries(n.release.stations).map(([code, r]) => ({ code, xyz: [r.x, r.y, r.z] })) }], n.name);
-      return;
-    }
-    if (act === 'net-port' && n) {
-      const port = $('net-port-edit').value.trim() || null;
-      if (String(port || '') === String(n.port || '')) { toast('Порт тот же.', 3000); return; }
-      if (!window.confirm(`Сеть ${n.name}: перевести раздачу на порт ${port || '2101 (общий)'}? Роверы, подключённые сейчас, отключатся и должны будут подключиться к новому порту.`)) return;
-      const res = await api(`/api/admin/networks/${n.id}`, 'PATCH', { port });
-      if (!res.ok) { toast(res.error || 'Не получилось.', 7000); return; }
-      toast(`Сеть ${n.name}: порт раздачи ${res.data.port || '2101 (общий)'}. Раздача откроет его за несколько секунд.`, 5000);
-      await reloadNetworks();
-      renderNet();
+      openExport([{ id: 'release', name: `Сеть ${n.name}, версия ${n.version} — то, что раздаётся`, frame: frameOf(recipeOf(n)), link: n.release.params || null,
+        points: Object.entries(n.release.stations).map(([code, r]) => ({ code, xyz: [r.x, r.y, r.z], epoch: n.release.epoch || null })) }], n.name);
       return;
     }
     let res = null;
     if (act === 'release-new') {
-      const src = lists.subnets.find((g) => g.id === Number($('net-subnet').value));
-      const body = { name: $('net-name').value.trim(), title: $('net-title').value.trim(), kind: $('net-kind').value, subnet_id: src ? src.id : null, port: $('net-port').value.trim() || null };
+      const src = draftSubnet();
+      const body = { name: d.name.trim(), title: d.title.trim(), subnet_id: d.subnet_id, port: d.port || null, recipe: d.recipe };
       if (!/^[A-Za-z0-9]{1,12}$/.test(body.name)) { toast('Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена точек подключения.', 6000); return; }
-      const look = await api('/api/admin/networks/preview', 'POST', { subnet_id: body.subnet_id, kind: body.kind });
+      const look = await api('/api/admin/networks/preview', 'POST', { subnet_id: body.subnet_id, recipe: body.recipe });
       if (!look.ok) { toast(look.error || 'Не получилось.', 7000); return; }
-      if (!window.confirm(`Выпустить сеть ${body.name.toUpperCase()} (${NET_KIND[body.kind]}) из подсети ${src.name}?\n${shiftText(look.data)}\nТочки подключения: ${body.name.toUpperCase()}_СТАНЦИЯ, порт ${body.port || '2101 (общий)'}.`)) return;
+      if (!window.confirm(`Выпустить сеть ${body.name.toUpperCase()} (${netLabel(d.recipe)}) из подсети ${src.name}?\n${shiftText(look.data)}\nТочки подключения: ${body.name.toUpperCase()}_СТАНЦИЯ, порт ${body.port || '2101 (общий)'}.`)) return;
       res = await api('/api/admin/networks', 'POST', body);
       if (res.ok) net.id = res.data.id;
     } else if (act === 'release-next' && n) {
-      const look = await api('/api/admin/networks/preview', 'POST', { network_id: n.id });
+      const portNew = String(d.port || '') !== String(n.port || '');
+      const look = await api('/api/admin/networks/preview', 'POST', { network_id: n.id, recipe: d.recipe });
       if (!look.ok) { toast(look.error || 'Не получилось.', 7000); return; }
-      if (!look.data.max_shift && !look.data.added.length && !look.data.gone.length && !look.data.params_changed) { toast('Изменений нет: координаты в подсети те же, что в действующей версии.', 5000); return; }
-      if (!window.confirm(`Сеть ${n.name}: выпустить версию ${n.version + 1}?\n${shiftText(look.data)}${look.data.params_changed ? '\nИзменятся параметры пересчёта в сообщении 1021.' : ''}\nРоверы на этой сети получат новое сразу.`)) return;
-      res = await api(`/api/admin/networks/${n.id}/release`, 'POST', {});
+      const same = !look.data.max_shift && !look.data.added.length && !look.data.gone.length && !look.data.params_changed && JSON.stringify(d.recipe) === JSON.stringify(recipeOf(n));
+      if (same && !portNew) { toast('Изменений нет: координаты в подсети и состав сети те же, что в действующей версии.', 5000); return; }
+      if (!window.confirm(`Сеть ${n.name}: ${same ? 'сменить порт' : `выпустить версию ${n.version + 1}`}?\n${same ? '' : `${shiftText(look.data)}\n`}${portNew ? `Порт раздачи станет ${d.port || '2101 (общий)'}: подключённые роверы отключатся.\n` : ''}Роверы на этой сети получат новое сразу.`)) return;
+      if (portNew) {
+        const moved = await api(`/api/admin/networks/${n.id}`, 'PATCH', { port: d.port || null });
+        if (!moved.ok) { toast(moved.error || 'Порт не сменён.', 7000); return; }
+        res = moved;
+      }
+      if (!same) res = await api(`/api/admin/networks/${n.id}/release`, 'POST', { recipe: d.recipe });
     } else if (act === 'release-del' && n) {
       if (!window.confirm(`Удалить сеть ${n.name}? Её точки подключения (${n.points.length}) исчезнут, роверы на них отключатся. Подсеть и её расчёты останутся.`)) return;
       res = await api(`/api/admin/networks/${n.id}`, 'DELETE');
@@ -2246,20 +2522,31 @@
     }
     if (!res) return;
     if (!res.ok) { toast(res.error || 'Не получилось.', 7000); return; }
-    toast(act === 'release-del' ? 'Сеть удалена.' : 'Сеть выпущена. Раздача подхватит её за несколько секунд.', 4000);
+    toast(act === 'release-del' ? 'Сеть удалена.' : 'Готово. Раздача подхватит изменения за несколько секунд.', 4000);
     await reloadNetworks();
+    net.block = null;
     renderNet();
     renderRail();
   });
   netDialog.addEventListener('change', async (event) => {
-    if (event.target.id === 'net-subnet') { kindBySubnet(); return; }
-    if (event.target.id === 'net-kind') { showDraft(); return; }
+    if (event.target.dataset.pick && net.draft) {
+      // Галочки станций: снятая галочка превращает «все» в явный список
+      const g = draftSubnet();
+      const all = g ? Object.keys(g.accepted || {}).sort() : [];
+      const on = new Set(net.draft.recipe.stations || all);
+      if (event.target.checked) on.add(event.target.dataset.pick); else on.delete(event.target.dataset.pick);
+      net.draft.recipe.stations = on.size === all.length || !on.size ? null : all.filter((c) => on.has(c));
+      if (!on.size) toast('В сети должна быть хотя бы одна станция: выбраны все.', 3500);
+      renderNet();
+      return;
+    }
+    if (event.target.id === 'net-port') { renderNet(); return; }
     if (event.target.id !== 'net-back') return;
     const version = Number(event.target.value);
     const n = lists.networks.find((x) => x.id === net.id);
     if (!n || !version) return;
     event.target.value = '';
-    if (!window.confirm(`Сеть ${n.name}: вернуть координаты версии ${version}? Это станет версией ${n.version + 1}; роверы получат их сразу.`)) return;
+    if (!window.confirm(`Сеть ${n.name}: вернуть версию ${version} — её координаты и состав блоков? Это станет версией ${n.version + 1}; роверы получат её сразу.`)) return;
     const res = await api(`/api/admin/networks/${n.id}/rollback`, 'POST', { version });
     if (!res.ok) { toast(res.error || 'Не получилось.', 7000); return; }
     toast(`Сеть ${n.name}: возвращена версия ${version}.`, 4000);

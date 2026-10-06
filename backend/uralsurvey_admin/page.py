@@ -97,7 +97,7 @@ def workspace() -> str:
                el("a", "Выгрузить CSV", cls="btn btn-quiet btn-small", id="list-export", hidden=True), button("Добавить", "primary", small=True, id="list-add", hidden=True),
                cls="adm-list-tools")
     table = el("div", el("table", el("thead", id="list-head"), el("tbody", id="list-body"), cls="messages srv-table adm-rows"), cls="adm-scroll")
-    listing = el("section", el("h2", el("span", id="list-title"), tools, cls="ins-title adm-list-head"), el("p", cls="hint", id="list-hint", hidden=True), table,
+    listing = el("section", el("h2", el("span", id="list-title"), tools, cls="ins-title adm-list-head"), el("p", cls="hint", id="list-hint", hidden=True), el("div", id="list-summary", hidden=True), table,
                  cls="srv-panel glass", id="list-box", hidden=True)
     # Журнал обрывов связи: полосы времени по станциям и список
     outages = el("section", cls="srv-panel glass", id="out-box", hidden=True)

@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql", "010_iono_day.sql", "011_network_kinds.sql", "012_network_port.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql", "010_iono_day.sql", "011_network_kinds.sql", "012_network_port.sql", "013_session_fix.sql", "014_network_recipe.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -633,13 +633,15 @@ class AdminTest(unittest.TestCase):
         self.assertGreater(abs(points["MSK3_LNK4"][0] - float(made[4]["x"])), 1.0)
         # Третий вид: координаты базы в ITRF2014, а привязка уходит роверу сообщениями пересчёта
         look = a.call("POST", "/api/admin/networks/preview", {"subnet_id": sub["id"], "kind": "itrf_msk"})[1]
-        self.assertEqual((look["plan"]["kind"], look["plan"]["params"]["tx"], look["plan"]["system"]), ("itrf_msk", -1.734, "msk66"))
-        self.assertTrue(55 < look["plan"]["area"]["lat"] < 60 and look["plan"]["area"]["dLon"] > 1, look["plan"]["area"])
+        self.assertEqual((look["plan"]["kind"], look["plan"]["params"]["tx"], look["plan"]["transform"]["target"]), ("itrf_msk", -1.734, "msk66"))
+        area = look["plan"]["transform"]["area"]
+        self.assertTrue(55 < area["lat"] < 60 and area["dLon"] > 1, area)
+        self.assertEqual(look["plan"]["recipe"], {"coords": "itrf2014", "transform": "msk66", "stations": None, "systems": ["G", "R", "E", "C"], "rate": 1, "near": True})
         status, both, _ = a.call("POST", "/api/admin/networks", {"name": "auto3", "subnet_id": sub["id"], "kind": "itrf_msk"})
         self.assertEqual(status, 201, both)
         got = {p["name"]: p for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
         self.assertEqual(got["AUTO3_LNK2"]["position"], [round(v, 4) for v in true[2]])
-        self.assertEqual((got["AUTO3_LNK2"]["transform"]["system"], got["AUTO3_LNK2"]["transform"]["link"]["tx"]), ("msk66", -1.734))
+        self.assertEqual((got["AUTO3_LNK2"]["transform"]["target"], got["AUTO3_LNK2"]["transform"]["link"]["tx"], got["AUTO3_LNK2"]["filter"]), ("msk66", -1.734, None))
         self.assertIsNone(got["ITRF3_LNK2"]["transform"])
         self.assertIsNone(got["MSK3_LNK2"]["transform"])
         # Свой порт раздачи: точки сети уходят на него; общий порт и занятые сервером не годятся
@@ -651,6 +653,10 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((status, both["port"]), (200, 2102))
         ports = {p["name"]: p["port"] for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
         self.assertEqual((ports["AUTO3_LNK2"], ports["MSK3_LNK2"], ports["LNK0"]), (2102, None, None))
+        # У каждой сети есть точка «ближайшая база» — на порту сети, со всеми её точками
+        auto = {x["name"]: x for x in a.call("GET", "/internal/directory", headers=key)[1]["auto"]}
+        self.assertEqual((auto["AUTO3_NEAR"]["port"], len(auto["AUTO3_NEAR"]["points"]), auto["MSK3_NEAR"]["port"]), (2102, 5, None))
+        self.assertIn("AUTO3_LNK2", auto["AUTO3_NEAR"]["points"])
         self.assertIsNone(a.call("PATCH", f"/api/admin/networks/{both['id']}", {"port": 2101})[1]["port"], "общий порт — значит без своего")
         # Пересчёт привязки в подсети выпущенную сеть не меняет, пока не выпущена новая версия
         self.assertEqual(a.call("POST", base + "/link", {"mode": "shift", "stations": ["LNK0", "LNK1", "LNK4"]})[0], 200)
@@ -679,6 +685,92 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("DELETE", base)[0], 200)
         for st in made:
             self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
+
+    def test_09g_network_blocks(self):
+        """Сеть раздачи как конструктор: станции, координаты, пересчёт, спутники, частота, ближайшая база."""
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        true = [[XYZ["x"] + dx, XYZ["y"] + dy, XYZ["z"] + dz] for dx, dy, dz in ((0, 0, 0), (60000, -20000, 5000), (-30000, 50000, -8000))]
+        made = []
+        for i, t in enumerate(true):
+            status, st, _ = a.call("POST", "/api/admin/stations", {"code": f"BLK{i}", "source_mode": "listen", "source_port": 2190 + i})
+            self.assertEqual(status, 201, st)
+            made.append(st)
+        status, sub, _ = a.call("POST", "/api/admin/subnets", {"name": "blocks", "station_ids": [s["id"] for s in made]})
+        self.assertEqual(status, 201, sub)
+        base = f"/api/admin/subnets/{sub['id']}"
+        # Координаты подсети — из разового PPP-AR, эпоха 2026,76; привязки нет
+        self.assertEqual(a.call("POST", base + "/ppp/start", {})[0], 200)
+        job = next(j for j in a.call("GET", "/internal/solver", headers=key)[1]["ppp"] if j["id"] == sub["id"])
+        res = {"epoch": 2026.76, "stations": {f"BLK{i}": {"x": t[0], "y": t[1], "z": t[2], "x14": t[0], "y14": t[1], "z14": t[2], "sd": [0.002] * 3, "fixed": True, "hours": 6} for i, t in enumerate(true)}}
+        self.assertEqual(a.call("POST", "/internal/solver", {"kind": "ppp", "id": sub["id"], "startedAt": job["startedAt"], "results": res, "final": True}, key)[1], {"stored": True})
+        self.assertEqual(a.call("POST", base + "/ppp/accept", {})[0], 200)
+        look = lambda recipe: a.call("POST", "/api/admin/networks/preview", {"subnet_id": sub["id"], "recipe": recipe})
+        # Недопустимые сочетания блоков объясняются словами
+        for recipe, text in (({"coords": "net1"}, "привязку"), ({"coords": "itrf2014", "transform": "msk66"}, "привязку"),
+                             ({"coords": "gsk2011", "transform": "sk42"}, "второй раз"), ({"systems": ["R", "E"]}, "Без GPS"),
+                             ({"rate": 3}, "Частота"), ({"stations": ["NOPE"]}, "проверьте блок")):
+            status, got, _ = look(recipe)
+            self.assertEqual(status, 400, (recipe, got))
+            self.assertIn(text, got["error"])
+        # ITRF2020 отличается от ITRF2014 на миллиметры; ГСК-2011 — на десятки сантиметров (плита уехала)
+        make = lambda name, recipe: a.call("POST", "/api/admin/networks", {"name": name, "subnet_id": sub["id"], "recipe": recipe})
+        status, n20, _ = make("b20", {"coords": "itrf2020", "stations": ["BLK0", "BLK1"], "systems": ["G", "R"], "rate": 2, "near": False})
+        self.assertEqual(status, 201, n20)
+        self.assertEqual((n20["kind"], sorted(p["name"] for p in n20["points"]), n20["recipe"]["rate"]), ("itrf", ["B20_BLK0", "B20_BLK1"], 2))
+        moved = lambda n, code, i: sum((n["release"]["stations"][code][k] - true[i][j]) ** 2 for j, k in enumerate("xyz")) ** 0.5
+        self.assertTrue(0.002 < moved(n20, "BLK0", 0) < 0.008, moved(n20, "BLK0", 0))
+        status, ngsk, _ = make("bgsk", {"coords": "gsk2011"})
+        self.assertEqual(status, 201, ngsk)
+        self.assertTrue(0.35 < moved(ngsk, "BLK0", 0) < 0.5, moved(ngsk, "BLK0", 0))
+        # Пересчёт в ГСК-2011 в потоке привязки не требует: параметры — движение плиты за эпоху
+        status, nflow, _ = make("bflow", {"coords": "itrf2020", "transform": "gsk2011"})
+        self.assertEqual(status, 201, nflow)
+        self.assertEqual((nflow["kind"], nflow["release"]["transform"]["target"], nflow["release"]["transform"]["source"], nflow["release"]["transform"]["link"]["tx"]),
+                         ("itrf_msk", "gsk2011", "ITRF2020", -0.0014))
+        d = a.call("GET", "/internal/directory", headers=key)[1]
+        points = {p["name"]: p for p in d["mountpoints"]}
+        self.assertEqual((points["B20_BLK1"]["filter"], points["B20_BLK1"]["transform"], points["BGSK_BLK1"]["filter"]), ({"systems": ["G", "R"], "rate": 2}, None, None))
+        self.assertEqual(points["BFLOW_BLK2"]["transform"]["epoch"], 2026.76)
+        names = [x["name"] for x in d["auto"]]
+        self.assertTrue("BGSK_NEAR" in names and "BFLOW_NEAR" in names and "B20_NEAR" not in names, names)
+        # Смена блока — новая версия: станция добавлена, спутники все; без изменений версия не выпускается
+        status, n20, _ = a.call("POST", f"/api/admin/networks/{n20['id']}/release", {"recipe": {"coords": "itrf2020", "systems": ["G", "R", "E", "C"], "rate": 2, "near": True}})
+        self.assertEqual((status, n20["version"], len(n20["points"]), n20["recipe"]["stations"]), (200, 2, 3, None))
+        self.assertEqual(a.call("POST", f"/api/admin/networks/{n20['id']}/release", {})[0], 400)
+        preview = a.call("POST", "/api/admin/networks/preview", {"network_id": n20["id"], "recipe": {"coords": "itrf2020", "rate": 5}})[1]
+        self.assertEqual((preview["params_changed"], preview["max_shift"], preview["plan"]["filter"]["rate"]), (True, 0.0, 5))
+        # Возврат первой версии возвращает и её состав
+        status, n20, _ = a.call("POST", f"/api/admin/networks/{n20['id']}/rollback", {"version": 1})
+        self.assertEqual((status, n20["version"], n20["recipe"]["systems"], len(n20["points"])), (200, 3, ["G", "R"], 2))
+        self.assertEqual(a.call("DELETE", base)[0], 200)
+        for n in (n20, ngsk, nflow):
+            self.assertEqual(a.call("DELETE", f"/api/admin/networks/{n['id']}")[0], 200)
+        for st in made:
+            self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
+
+    def test_09f_fix_stats(self):
+        """Статистика фикса: раздача присылает её с сеансом, сводка считается по расстоянию до базы."""
+        import time
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        now = time.time() * 1000
+        events = []
+        for i, fix in enumerate([{"ttf": 8.0, "fixed": 900, "float": 60, "other": 40, "lost": 1, "km": 4.2, "kmFix": 4.2, "age": 1.1, "ageMax": 3.0},
+                                 {"ttf": 20.0, "fixed": 500, "float": 400, "other": 100, "lost": 0, "km": 7.9, "age": 1.5, "ageMax": 2.0},
+                                 {"ttf": None, "fixed": 0, "float": 300, "other": 100, "lost": 0, "km": 41.0, "age": 2.0, "ageMax": 9.0, "bases": ["A", "B"]},
+                                 {"ttf": 3.0, "fixed": 20, "float": 5, "other": 5, "lost": 0, "km": 2.0}]):
+            events.append({"t": "open", "id": f"fix-{i}", "at": now - 3600e3, "login": "nobody", "point": "NEAR", "station": "", "address": "10.0.0.9"})
+            events.append({"t": "close", "id": f"fix-{i}", "at": now - 1800e3, "login": "nobody", "bytes": 1000, "reason": "ровер отключился", "fix": fix, "station": "B" if i == 2 else "A"})
+        self.assertEqual(a.call("POST", "/internal/events", {"events": events}, key)[1]["recorded"], 8)
+        got = a.call("GET", "/api/admin/fix-stats?days=7")[1]
+        near, far = got["bins"][0], got["bins"][3]
+        # Короткий сеанс (полминуты) в счёт не идёт
+        self.assertEqual((got["sessions"], near["sessions"], near["with_fix"], near["ttf_median"], near["ttf_worst"]), (3, 2, 2, 20.0, 20.0))
+        self.assertEqual((near["fixed_share"], near["lost_per_hour"], near["age"]), (0.7, 2.57, 1.3))
+        self.assertEqual((far["sessions"], far["with_fix"], far["ttf_median"], far["fixed_share"], far["lost_per_hour"]), (1, 0, None, 0.0, None))
+        row = next(s for s in a.call("GET", "/api/admin/sessions?limit=50")[1]["items"] if s["caster_id"] == "fix-2")
+        self.assertEqual((row["mountpoint"], row["station"], row["fix"]["bases"]), ("NEAR", "B", ["A", "B"]))
 
     def test_09e_outages(self):
         """Журнал обрывов: события от приёма, простой сервера отдельно, сводка по станциям."""

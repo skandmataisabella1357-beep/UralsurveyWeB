@@ -68,6 +68,12 @@ function launch(name, start, attempt = 0) {
   child.on('exit', (code) => {
     children.delete(name);
     if (stopping) return;
+    // Перезапуск по команде (обновление панели) — сразу и без счёта неудач
+    if (child.planned) {
+      console.log(`служба «${name}» перезапущена по команде`);
+      setTimeout(() => launch(name, start, 0), 300);
+      return;
+    }
     const next = Date.now() - startedAt > 60000 ? 0 : attempt;
     const delay = BACKOFF_MS[Math.min(next, BACKOFF_MS.length - 1)];
     console.error(`служба «${name}» остановилась (код ${code}), перезапуск через ${delay / 1000} с`);
@@ -128,3 +134,18 @@ function stop() {
 }
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
+
+// Обновление панели без разрыва связи: по сигналу HUP перезапускаются только управление (панель,
+// база) и расчёт. Приём и раздача продолжают работать по последнему справочнику — станции и
+// роверы этого не замечают. Полный перезапуск (сигнал TERM) нужен, только когда меняется код
+// приёма, раздачи или этот файл.
+process.on('SIGHUP', () => {
+  if (stopping) return;
+  console.log('Обновление панели: перезапускаются управление и расчёт, приём и раздача не трогаются');
+  for (const name of ['управление', 'расчёт']) {
+    const child = children.get(name);
+    if (!child) continue;
+    child.planned = true;
+    child.kill();
+  }
+});
