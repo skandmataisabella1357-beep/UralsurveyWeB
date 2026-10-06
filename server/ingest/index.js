@@ -8,7 +8,8 @@ const { StationHub } = require('../../core/station');
 const { createSimulator, syntheticSource } = require('../../core/simulator');
 const { BusServer } = require('../shared/bus');
 const { StationGate } = require('./gate');
-const { Directory } = require('../shared/directory');
+const { Directory, request, readKey } = require('../shared/directory');
+const { OutageTracker } = require('../../modules/outages/tracker');
 const { ecefToLlh, R2D } = require('../../core/geo');
 const { jsonServer } = require('../shared/http');
 const { loadConfig, credentials } = require('../shared/config');
@@ -122,6 +123,31 @@ async function start({ config, secrets, log = console.log, directoryUrl = proces
     });
     directory.start();
   }
+
+  // Журнал обрывов: раз в две секунды сверяем связь станций, события копим и отдаём управлению.
+  // Управление недоступно — события ждут в очереди; приём от этого не зависит.
+  const tracker = new OutageTracker();
+  const outbox = [{ t: 'start', at: startedAt }];
+  let outKey = directoryKey;
+  let lastSent = 0;
+  let sending = false;
+  const sourceOf = (s) => (s.source.mode === 'listen' ? 'напрямую' : (s.source.host || s.source.mode));
+  const watch = setInterval(async () => {
+    const now = Date.now();
+    outbox.push(...tracker.step(hub.snapshots(), now, Object.fromEntries(stations.map((s) => [s.code, sourceOf(s)]))));
+    if (outbox.length > 5000) outbox.splice(0, outbox.length - 5000);
+    if (!directoryUrl || sending || (!outbox.length && now - lastSent < 15000)) return;
+    sending = true;
+    try {
+      if (!outKey) outKey = readKey();
+      const batch = outbox.slice();
+      const res = await request('POST', `${directoryUrl}/internal/outages`, outKey, { events: batch, alive: now });
+      if (res.ok) { outbox.splice(0, batch.length); lastSent = now; }
+    } finally {
+      sending = false;
+    }
+  }, 2000);
+  if (watch.unref) watch.unref();
 
   const state = jsonServer({
     '/state': () => ({

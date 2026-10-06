@@ -228,3 +228,23 @@ test('суточный PPP-AR: какие сутки пора считать', (
   task.have['2026-10-06'].products = 'WUM0MGXRAP';
   assert.equal(ppp.dueDay(task, day + 40 * H, R), null);
 });
+
+test('журнал обрывов: события по снимкам состояния станций', () => {
+  const { OutageTracker } = require('../modules/outages/tracker');
+  const tr = new OutageTracker({ graceMs: 60000 });
+  const snap = (id, state, detail = '') => ({ id, link: { state, detail, stateLabel: state } });
+  // Станции только что заведены: пока подключаются, обрыва нет
+  assert.deepEqual(tr.step([snap('A', 'connecting'), snap('B', 'connecting')], 1000), []);
+  assert.deepEqual(tr.step([snap('A', 'online'), snap('B', 'connecting')], 3000), [{ t: 'up', station: 'A', at: 3000, reason: '' }]);
+  // Вторая так и не подключилась за минуту: обрыв с момента, как её начали слушать
+  assert.deepEqual(tr.step([snap('A', 'online'), snap('B', 'retry', 'нет ответа; повтор через 10 с')], 62000, { B: 'кастер' }),
+    [{ t: 'down', station: 'B', at: 1000, reason: 'нет ответа', source: 'кастер' }]);
+  // Связь пропала и вернулась: причина обрыва уходит вместе с возвращением
+  assert.deepEqual(tr.step([snap('A', 'retry', 'соединение закрыто; повтор через 3 с'), snap('B', 'retry')], 70000, { A: 'напрямую' }),
+    [{ t: 'down', station: 'A', at: 70000, reason: 'соединение закрыто', source: 'напрямую' }]);
+  assert.deepEqual(tr.step([snap('A', 'retry'), snap('B', 'retry')], 72000), []);
+  assert.deepEqual(tr.step([snap('A', 'online'), snap('B', 'retry')], 75000), [{ t: 'up', station: 'A', at: 75000, reason: 'соединение закрыто' }]);
+  // Станцию без связи убрали из приёма: её обрыв закрывается
+  assert.deepEqual(tr.step([snap('A', 'online')], 80000), [{ t: 'gone', station: 'B', at: 80000 }]);
+  assert.deepEqual(tr.step([snap('A', 'online')], 82000), []);
+});

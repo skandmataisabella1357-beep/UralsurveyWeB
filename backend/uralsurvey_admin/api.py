@@ -152,6 +152,7 @@ class App:
             r("GET", r"/api/admin/sessions", lambda q: (200, store.list_sessions(
                 q.arg("login"), q.arg("mountpoint"), q.arg("from"), q.arg("to"), q.arg("open") == "1", q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "operator"),
             r("POST", r"/api/admin/sessions/close", self.close_session, "operator"),
+            r("GET", r"/api/admin/outages", lambda q: (200, store.list_outages(q.int_arg("hours") or 24)), "operator"),
             r("GET", r"/api/admin/refusals", lambda q: (200, store.list_refusals(q.arg("login"), q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "operator"),
             r("GET", r"/api/admin/audit", lambda q: (200, store.list_audit(q.arg("admin"), q.arg("entity"), q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "admin"),
             # Настройки
@@ -389,6 +390,8 @@ def make_handler(app: App):
                 if isinstance(data.get("alive"), list):
                     store.close_stale_sessions(data["alive"])
                 return self.send_json(200, {"recorded": done})
+            if path == "/internal/outages" and self.command == "POST":
+                return self.send_json(200, {"recorded": store.record_outages(self.body())})
             if path == "/internal/solver" and self.command == "GET":
                 return self.send_json(200, {"subnets": store.solver_tasks(), "ppp": store.solver_ppp_tasks(), "pppDaily": store.solver_ppp_daily()})
             if path == "/internal/solver" and self.command == "POST":

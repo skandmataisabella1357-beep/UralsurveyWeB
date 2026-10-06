@@ -1049,6 +1049,7 @@ class Store:
             s = conn.execute("DELETE FROM sessions WHERE started_at < now() - make_interval(days => %s)", (self._setting(conn, "session_keep_days"),)).rowcount
             r = conn.execute("DELETE FROM refusals WHERE at < now() - make_interval(days => %s)", (self._setting(conn, "refusal_keep_days"),)).rowcount
             conn.execute("DELETE FROM admin_sessions WHERE expires_at < now()")
+            conn.execute("DELETE FROM station_outages WHERE ended_at < now() - interval '180 days'")
         return {"sessions": s, "refusals": r}
 
     def import_stations(self, who: dict, items: list[dict]) -> dict:
@@ -1661,6 +1662,85 @@ class Store:
             conn.execute("UPDATE subnets SET results = %s, results_at = now(), calc_state = %s WHERE id = %s",
                          (Jsonb(results), "stopped" if final else "running", subnet_id))
         return True
+
+    # ---------- Журнал обрывов связи ----------
+
+    def record_outages(self, data: dict) -> int:
+        """События от службы приёма: start — служба запустилась, down — связь со станцией пропала,
+        up — вернулась, gone — станцию убрали из приёма. alive — отметка «приём работает»."""
+        def moment(ms) -> dt.datetime:
+            return dt.datetime.fromtimestamp(float(ms) / 1000, dt.timezone.utc)
+
+        done = 0
+        with self.db.transaction() as conn:
+            # Журнал начинается с первого события: оно может быть чуть раньше первой записи
+            first = [moment(e["at"]) for e in data.get("events") or [] if isinstance(e, dict) and isinstance(e.get("at"), (int, float))]
+            conn.execute("INSERT INTO service_marks (name, at) VALUES ('journal_start', LEAST(now(), %s)) ON CONFLICT DO NOTHING", (min(first) if first else dt.datetime.now(dt.timezone.utc),))
+            for e in data.get("events") or []:
+                if not isinstance(e, dict) or not isinstance(e.get("at"), (int, float)):
+                    continue
+                at, kind, code = moment(e["at"]), e.get("t"), str(e.get("station") or "")
+                if kind == "start":
+                    # Приём молчал с последней отметки: для станций на связи это простой сервера
+                    last = conn.execute("SELECT at FROM service_marks WHERE name = 'ingest_alive'").fetchone()
+                    if last and (at - last["at"]).total_seconds() > 20:
+                        conn.execute(
+                            "INSERT INTO station_outages (station, started_at, kind, reason) SELECT s.code, %s, 'service', 'перезапуск сервера приёма' FROM stations s "
+                            "WHERE s.enabled AND NOT EXISTS (SELECT 1 FROM station_outages o WHERE o.station = s.code AND o.ended_at IS NULL)", (last["at"],))
+                    done += 1
+                    continue
+                if not re.fullmatch(CODE, code):
+                    continue
+                reason, source = str(e.get("reason") or "")[:200], str(e.get("source") or "")[:120]
+                if kind == "down":
+                    # Простой сервера кончился, а станция так и не вернулась: дальше это её обрыв
+                    conn.execute("UPDATE station_outages SET ended_at = GREATEST(%s, started_at) WHERE station = %s AND ended_at IS NULL AND kind = 'service'", (at, code))
+                    if not conn.execute("SELECT 1 FROM station_outages WHERE station = %s AND ended_at IS NULL", (code,)).fetchone():
+                        conn.execute("INSERT INTO station_outages (station, started_at, reason, source) VALUES (%s, %s, %s, %s)", (code, at, reason, source))
+                elif kind in ("up", "gone"):
+                    conn.execute("UPDATE station_outages SET ended_at = GREATEST(%s, started_at), reason = CASE WHEN kind = 'link' AND %s <> '' THEN %s ELSE reason END "
+                                 "WHERE station = %s AND ended_at IS NULL", (at, reason, reason, code))
+                else:
+                    continue
+                done += 1
+            if isinstance(data.get("alive"), (int, float)):
+                conn.execute("INSERT INTO service_marks (name, at) VALUES ('ingest_alive', %s) ON CONFLICT (name) DO UPDATE SET at = EXCLUDED.at", (moment(data["alive"]),))
+        return done
+
+    def list_outages(self, hours: int = 24) -> dict:
+        """Обрывы за последние часы: по станциям — число, простой, доля времени на связи и сами
+        отрезки для полосы времени. Раньше начала журнала данных нет: окно начинается с него."""
+        hours = max(1, min(int(hours or 24), 24 * 31))
+        now = dt.datetime.now(dt.timezone.utc)
+        with self.db.connection() as conn:
+            mark = conn.execute("SELECT at FROM service_marks WHERE name = 'journal_start'").fetchone()
+            since = max(now - dt.timedelta(hours=hours), mark["at"]) if mark else now
+            rows = conn.execute("SELECT * FROM station_outages WHERE COALESCE(ended_at, now()) >= %s ORDER BY started_at", (since,)).fetchall()
+            stations = conn.execute("SELECT code, source_mode, source_host, enabled FROM stations ORDER BY code").fetchall()
+        span = max((now - since).total_seconds(), 1)
+        out = {}
+        for s in stations:
+            out[s["code"]] = {"code": s["code"], "enabled": s["enabled"], "source": "напрямую" if s["source_mode"] == "listen" else (s["source_host"] or s["source_mode"]),
+                              "count": 0, "down_s": 0.0, "service_s": 0.0, "longest_s": 0.0, "open": False, "items": []}
+        for r in rows:
+            st = out.setdefault(r["station"], {"code": r["station"], "enabled": False, "source": "", "count": 0, "down_s": 0.0, "service_s": 0.0, "longest_s": 0.0, "open": False, "items": []})
+            start, end = max(r["started_at"], since), r["ended_at"] or now
+            length = max((end - start).total_seconds(), 0)
+            if r["kind"] == "link":
+                st["count"] += 1
+                st["down_s"] += length
+                st["longest_s"] = max(st["longest_s"], length)
+                st["open"] = st["open"] or r["ended_at"] is None
+            else:
+                st["service_s"] += length
+            st["items"].append({"from": start.isoformat(), "to": end.isoformat(), "open": r["ended_at"] is None, "kind": r["kind"], "reason": r["reason"], "source": r["source"],
+                                "seconds": round((end - r["started_at"]).total_seconds(), 1)})
+        for st in out.values():
+            st["availability"] = round(max(0.0, 1 - (st["down_s"] + st["service_s"]) / span), 5)
+            for key in ("down_s", "service_s", "longest_s"):
+                st[key] = round(st[key], 1)
+        return {"from": since.isoformat(), "to": now.isoformat(), "hours": hours, "journal_start": mark["at"].isoformat() if mark else None,
+                "stations": sorted(out.values(), key=lambda s: s["code"])}
 
     # ---------- Выгрузка ----------
 

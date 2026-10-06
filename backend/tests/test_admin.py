@@ -88,7 +88,7 @@ class AdminTest(unittest.TestCase):
     # Тесты идут по порядку имён: каждый следующий опирается на записи предыдущих
 
     def test_01_schema_and_secrets(self):
-        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql"])
+        self.assertEqual(self.applied, ["001_init.sql", "002_subnets.sql", "003_subnet_once.sql", "004_subnet_ppp.sql", "005_layers.sql", "006_subnet_link.sql", "007_networks.sql", "008_send_catalog.sql", "009_outages.sql"])
         self.assertEqual(self.db.migrate(), [], "повторное применение схемы ничего не делает")
         digest, salt = security.hash_password(ADMIN_PASSWORD)
         self.assertTrue(security.verify_password(ADMIN_PASSWORD, digest, salt))
@@ -641,6 +641,32 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("DELETE", base)[0], 200)
         for st in made:
             self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
+
+    def test_09e_outages(self):
+        """Журнал обрывов: события от приёма, простой сервера отдельно, сводка по станциям."""
+        import time
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        status, st, _ = a.call("POST", "/api/admin/stations", {"code": "OUT1", "source_mode": "listen", "source_port": 2180})
+        self.assertEqual(status, 201, st)
+        now = time.time() * 1000
+        post = lambda events, alive=None: a.call("POST", "/internal/outages", {"events": events, "alive": alive}, key)[1]["recorded"]
+        self.assertEqual(a.call("POST", "/internal/outages", {"events": []})[0], 404, "без ключа адрес закрыт")
+        # Обрыв на минуту четверть часа назад и второй, который ещё длится
+        self.assertEqual(post([{"t": "down", "station": "OUT1", "at": now - 900e3, "reason": "ждём данные", "source": "напрямую"},
+                               {"t": "up", "station": "OUT1", "at": now - 840e3, "reason": "соединение закрыто"},
+                               {"t": "down", "station": "OUT1", "at": now - 30e3, "reason": "нет ответа", "source": "напрямую"},
+                               {"t": "down", "station": "OUT1", "at": now - 20e3, "reason": "повтор"}, {"t": "down", "station": "плохой код", "at": now}], alive=now - 10e3), 4)
+        got = next(s for s in a.call("GET", "/api/admin/outages?hours=24")[1]["stations"] if s["code"] == "OUT1")
+        self.assertEqual((got["count"], got["open"], got["source"], len(got["items"])), (2, True, "напрямую", 2))
+        self.assertEqual((got["items"][0]["reason"], round(got["items"][0]["seconds"])), ("соединение закрыто", 60))
+        self.assertTrue(85 <= got["down_s"] <= 95 and got["longest_s"] == 60.0, got)
+        # Перезапуск приёма: открытый обрыв станции остаётся её обрывом; у станций на связи — простой сервера
+        self.assertEqual(post([{"t": "up", "station": "OUT1", "at": now - 9e3}], alive=now - 9e3), 1)
+        self.assertEqual(post([{"t": "start", "at": now + 60e3}, {"t": "up", "station": "OUT1", "at": now + 62e3}], alive=now + 62e3), 2)
+        got = next(s for s in a.call("GET", "/api/admin/outages?hours=24")[1]["stations"] if s["code"] == "OUT1")
+        self.assertEqual((got["count"], got["open"], [i["kind"] for i in got["items"]]), (2, False, ["link", "link", "service"]))
+        self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
 
     def test_10_bruteforce(self):
         # Счётчик неудач общий на адрес и уже видел неверные пароли из прежних тестов:

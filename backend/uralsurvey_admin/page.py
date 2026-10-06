@@ -98,7 +98,9 @@ def workspace() -> str:
     table = el("div", el("table", el("thead", id="list-head"), el("tbody", id="list-body"), cls="messages srv-table adm-rows"), cls="adm-scroll")
     listing = el("section", el("h2", el("span", id="list-title"), tools, cls="ins-title adm-list-head"), el("p", cls="hint", id="list-hint", hidden=True), table,
                  cls="srv-panel glass", id="list-box", hidden=True)
-    main = el("main", overview, el("section", id="sub-box", hidden=True), listing, cls="adm-float", id="main", hidden=True)
+    # Журнал обрывов связи: полосы времени по станциям и список
+    outages = el("section", cls="srv-panel glass", id="out-box", hidden=True)
+    main = el("main", overview, el("section", id="sub-box", hidden=True), listing, outages, cls="adm-float", id="main", hidden=True)
     # Разделы — одной вертикальной лентой значков у левого края
     ribbon = el("nav", cls="adm-ribbon glass", id="nav", aria_label="Разделы")
     # Всплывающая подсказка у значков ленты: что это и что сейчас показано

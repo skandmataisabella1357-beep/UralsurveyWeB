@@ -392,3 +392,52 @@ body.adm.map-holo .map-wrap::after { content: ''; position: absolute; inset: 0; 
 .adm-sub-form.is-release { grid-template-columns: 150px minmax(0, 1fr) 230px auto; }
 .adm-actions.is-row { margin: 0; flex-wrap: nowrap; }
 @media (max-width: 900px) { .adm-sub-form.is-release { grid-template-columns: minmax(0, 1fr); } }
+
+/* Журнал обрывов: полосы времени по станциям */
+.adm-out-figures { margin: 6px 0 12px; }
+.adm-out-figures .adm-figure { display: grid; gap: 2px; padding: 10px 14px; border-radius: 12px; text-align: left; }
+.adm-out-figures .adm-figure b { font-family: var(--figures); font-size: 20px; font-weight: 500; }
+.adm-out-figures .adm-figure span { font-size: 11px; color: var(--muted); }
+.adm-out-figures .is-good b { color: #7fe0b4; }
+.adm-out-figures .is-warn b { color: #ffc48e; }
+.adm-out { display: grid; gap: 5px; margin-bottom: 8px; }
+.adm-out-row { display: grid; grid-template-columns: 52px 108px minmax(120px, 1fr) 34px 96px 68px; align-items: center; gap: 10px; font-size: 12px; }
+.adm-out-row > .fig { text-align: right; color: var(--muted); }
+.adm-out-row > .adm-out-code { text-align: left; color: var(--text); }
+.adm-out-row > .adm-out-share { color: var(--text); }
+.adm-out-row.is-open .adm-out-code { color: #ff8fa3; }
+.adm-out-row.is-axis { font-size: 10.5px; color: var(--muted); }
+.adm-out-row.is-axis > span { text-align: right; }
+.adm-tl-axis { display: flex; justify-content: space-between; }
+.adm-src { overflow: hidden; padding: 1px 7px; border: 1px solid var(--line); border-radius: 7px; font-size: 10.5px; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.adm-src.is-direct { border-color: transparent; color: #7fe0b4; box-shadow: inset 0 0 0 1px rgba(127, 224, 180, 0.55); }
+.adm-tl { position: relative; height: 12px; overflow: hidden; border-radius: 6px; background: linear-gradient(90deg, rgba(127, 224, 180, 0.28), rgba(132, 200, 255, 0.28)); box-shadow: inset 0 0 0 1px rgba(127, 224, 180, 0.22); }
+.adm-tl i { position: absolute; top: 0; bottom: 0; min-width: 2px; background: #ff5d7a; box-shadow: 0 0 6px 1px rgba(255, 93, 122, 0.7); }
+.adm-tl i.is-service { background: #8a86a8; box-shadow: none; opacity: 0.75; }
+.adm-tl i.is-open { animation: adm-blink 1.4s ease-in-out infinite; }
+@keyframes adm-blink { 50% { opacity: 0.45; } }
+.adm-key { display: inline-block; width: 9px; height: 9px; margin: 0 5px 0 12px; border-radius: 2px; vertical-align: baseline; }
+.adm-key:first-child { margin-left: 0; }
+.adm-key.is-link { background: #ff5d7a; }
+.adm-key.is-service { background: #8a86a8; }
+.adm-key.is-direct { background: transparent; box-shadow: inset 0 0 0 1px #7fe0b4; }
+.inspector .adm-tl { margin-top: 2px; }
+
+/* Координаты станции: цвет — система, рамка — то, что раздаётся роверам */
+.adm-coords { display: grid; gap: 6px; }
+.adm-coordset { --tone: #8a86a8; padding: 6px 9px 6px 11px; border-left: 3px solid var(--tone); border-radius: 4px 9px 9px 4px; background: color-mix(in srgb, var(--tone) 9%, transparent); }
+.adm-coordset p { margin: 0; font-size: 12px; }
+.adm-coordset b { font-weight: 500; color: var(--tone); }
+.adm-coordset .fig { margin: 2px 0; font-size: 12.5px; }
+.adm-coordset .adm-coordsys { font-size: 10.5px; color: var(--muted); }
+.adm-coordset.is-stream { --tone: #ffc48e; }
+.adm-coordset.is-cat { --tone: #b8a4ff; }
+.adm-coordset.is-itrf { --tone: #7fe0b4; }
+.adm-coordset.is-net { --tone: #84c8ff; }
+.adm-coordset.is-served { box-shadow: inset 0 0 0 1px var(--tone), 0 0 10px -2px var(--tone); }
+.adm-served { float: right; padding: 0 6px; border-radius: 6px; background: var(--tone); color: #1d1838; font-size: 10px; font-weight: 500; }
+@media (max-width: 900px) { .adm-out-row { grid-template-columns: 46px minmax(80px, 1fr) 30px 62px; } .adm-out-row > .adm-src, .adm-out-row > :nth-child(5) { display: none; } }
+.adm-coordset .fig { font-size: 10.5px; white-space: nowrap; letter-spacing: -0.02em; }
+.adm-tone { margin-left: 6px; padding: 0 6px; border-radius: 6px; font-style: normal; font-size: 10px; font-weight: 500; color: #1d1838; }
+.adm-tone.is-stream { background: #ffc48e; }
+.adm-tone.is-cat { background: #b8a4ff; }

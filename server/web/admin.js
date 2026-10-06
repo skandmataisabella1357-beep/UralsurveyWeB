@@ -25,6 +25,7 @@
     sessions: '<circle cx="9" cy="9" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 6.2a3 3 0 0 1 0 5.6M17.5 14.6c2 .8 3.5 2.9 3.5 5.4"/>',
     refusals: '<circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/>',
     audit: '<path d="M6 3h9l4 4v14H6ZM9 10h7M9 14h7M9 18h4"/>',
+    outages: '<path d="M2 12h4l2.500-6 3 12 2.500-6h2"/><path d="M18.500 9.500l3.500 5M22 9.500l-3.500 5"/>',
     admins: '<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.500 7-10V6Z"/><path d="M9.500 12l2 2 3.500-4"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2.100 2.100M16.300 16.300l2.100 2.100M5.600 18.400l2.100-2.100M16.300 7.700l2.100-2.100"/>',
   };
@@ -231,9 +232,10 @@
       ],
     },
     settings: { title: 'Настройки', path: '/api/admin/settings', custom: 'settings' },
+    outages: { title: 'Обрывы связи', needs: [], custom: 'outages', readonly: true },
   };
   const TITLE = { subnets: 'подсеть', stations: 'станция', mountpoints: 'точка', clients: 'клиент', tariffs: 'тариф', subscriptions: 'подписка', ntrip_logins: 'логин', admins: 'администратор', settings: 'настройки', sessions: 'сеанс' };
-  const NAV = ['overview', 'stations', 'subnets', 'mountpoints', 'clients', 'logins', 'tariffs', 'subscriptions', 'sessions', 'refusals', 'audit', 'admins', 'settings'];
+  const NAV = ['overview', 'stations', 'subnets', 'outages', 'mountpoints', 'clients', 'logins', 'tariffs', 'subscriptions', 'sessions', 'refusals', 'audit', 'admins', 'settings'];
 
   // ---------- Вход ----------
 
@@ -274,6 +276,7 @@
     // У станций счётчик показывает каталог сети ниже
     const badge = { mountpoints: () => c.mountpoints, clients: () => c.clients,
       logins: () => `${c.logins_active}/${c.logins}`, sessions: () => (live ? live.clients.length : ''), refusals: () => c.refusals_day };
+    badge.outages = () => (live ? live.stations.filter((x) => x.link.state !== 'online').length || '' : '');
     // Разделы — строка мелких значков без подписей: название видно при наведении
     $('nav').innerHTML = NAV.filter((id) => !VIEWS[id].adminOnly || isAdmin()).map((id) => `<button class="tile" type="button" data-view="${id}" data-tip="view:${id}" aria-current="${id === view}" aria-label="${esc(VIEWS[id].title)}">
       <svg viewBox="0 0 24 24" aria-hidden="true">${ICON[id]}</svg></button>`).join('')
@@ -440,6 +443,8 @@
     // В разделах сети по центру только карта: списки станций и подсетей — в каталоге слева
     $('list-box').hidden = view === 'overview' || Boolean(v.map);
     $('sub-box').hidden = true;
+    $('out-box').hidden = view !== 'outages';
+    if (view === 'outages') { $('list-box').hidden = true; return renderOutages(); }
     if (view === 'overview') return renderOverview();
     if (v.custom === 'subnets') {
       renderSubnets();
@@ -582,7 +587,8 @@
       const c = live ? live.counts : null;
       const more = { stations: () => `На связи ${live.stations.filter((s) => s.link.state === 'online').length} из ${c.stations}.`, subnets: () => `Подсетей: ${lists.subnets.length}. Подсеть считает координаты, раздаёт их выпущенная из неё сеть. Шаги: контур, расчёт, PPP-AR, привязка, выпуск.`,
         mountpoints: () => `Точек подключения: ${c.mountpoints}.`, clients: () => `Клиентов: ${c.clients}.`, logins: () => `Активных логинов ${c.logins_active} из ${c.logins}.`,
-        sessions: () => `Роверов на связи: ${live.clients.length}, сеансов за сегодня: ${c.sessions_today}.`, refusals: () => `Отказов за сутки: ${c.refusals_day}.` }[id];
+        sessions: () => `Роверов на связи: ${live.clients.length}, сеансов за сегодня: ${c.sessions_today}.`, refusals: () => `Отказов за сутки: ${c.refusals_day}.`,
+        outages: () => { const d = out.data; const n = d ? d.stations.reduce((a, x) => a + x.count, 0) : 0; return d ? `За ${periodName(out.hours)}: обрывов ${n}. Журнал хранится в базе и не теряется при перезапуске сервера.` : 'Журнал обрывов связи со станциями.'; } }[id];
       return `<b>${esc(VIEWS[id].title)}</b>${c && more ? `<p>${more()}</p>` : ''}`;
     }
     const title = SHOW_TILES.find((t) => t[0] === id)[1];
@@ -1085,10 +1091,15 @@
 
     // Положение: плоские координаты МСК-66 и X, Y, Z из потока
     const pos = st ? st.position : null;
-    if (pos) {
+    // Положение показывается по тем координатам, что получают роверы: из каталога, если станции
+    // велено раздавать их, иначе из потока базы
+    const fromCat = Boolean(row.send_catalog && row.x !== null && window.CoordSys);
+    const shown = fromCat ? (() => { const e = [row.x, row.y, row.z]; const g = window.CoordSys.toGeodetic(e, { a: 6378137, f: 1 / 298.257223563 }); return { ecef: e, lat: g.lat * 180 / Math.PI, lon: g.lon * 180 / Math.PI, h: g.h, source: 'rtcm' }; })() : pos;
+    if (shown) {
+      const pos = shown; // eslint-disable-line no-shadow
       const exact = pos.source === 'rtcm';
       const flat = window.CoordSys ? window.CoordSys.convert('msk66', pos.ecef) : null;
-      let note = exact ? `Координаты переданы самой станцией в сообщении ${pos.messageType}.` : 'Вычислено по наблюдениям: в потоке координат станции нет. Точность метровая, это не каталожные координаты.';
+      let note = fromCat ? 'Координаты из каталога сети 1: их получают роверы вместо тех, что шлёт база.' : (exact ? `Координаты переданы самой станцией в сообщении ${pos.messageType}.` : 'Вычислено по наблюдениям: в потоке координат станции нет. Точность метровая, это не каталожные координаты.');
       if (exact && pos.antennaHeight !== null && pos.antennaHeight !== undefined) note += ` Высота антенны ${num(pos.antennaHeight, 4)}${NBSP}м.`;
       let rowsHtml;
       if (flat) {
@@ -1101,15 +1112,49 @@
         const lo = dms(pos.lon, 'lon', exact ? 5 : 1);
         rowsHtml = `<dt>Широта</dt><dd class="fig">${la.text}<span>${la.hemi}</span></dd><dt>Долгота</dt><dd class="fig">${lo.text}<span>${lo.hemi}</span></dd><dt>Высота</dt><dd class="fig">${num(pos.h, exact ? 3 : 0)}<span>м над эллипсоидом</span></dd>`;
       }
-      parts.push(section('Положение станции', flat ? `${esc(flat.name)}, зона ${flat.zone}` : 'WGS-84', `<dl class="coords">${rowsHtml}</dl>${xyz(pos.ecef, exact ? 4 : 0)}<p class="source">${note}</p>`));
+      parts.push(section(`Положение станции <i class="adm-tone ${fromCat ? 'is-cat' : 'is-stream'}">${fromCat ? 'каталог' : 'поток базы'}</i>`, flat ? `${esc(flat.name)}, зона ${flat.zone}` : 'WGS-84', `<dl class="coords">${rowsHtml}</dl>${xyz(pos.ecef, exact ? 4 : 0)}<p class="source">${note}</p>`));
     } else {
       parts.push(section('Положение станции', '', `<p class="notice is-plain">${st && st.link.state === 'online' ? 'Координаты станции пока не получены.' : 'Координаты появятся, когда пойдут данные.'}</p>`));
     }
 
-    // Каталог: показывается, когда координаты заведены; рядом — расхождение с потоком
-    if (row.x !== null) {
-      const d = pos ? Math.hypot(pos.ecef[0] - row.x, pos.ecef[1] - row.y, pos.ecef[2] - row.z) : null;
-      parts.push(section('Координаты в каталоге', 'X, Y, Z', `${xyz([row.x, row.y, row.z], 4)}${d === null ? '' : `<p class="${d > 10 ? 'notice' : 'source'}">Расхождение с потоком: ${d < 0.001 ? 'нет' : `${num(d, d < 1 ? 4 : 1)}${NBSP}м`}${d > 10 ? '. Больше 10 м: похоже, на станцию пришёл чужой поток.' : ''}</p>`}${row.send_catalog ? '<p class="source">Роверам раздаются координаты из каталога, а не те, что шлёт база.</p>' : ''}`));
+    // Все координаты станции рядом: цвет — система, отметка «раздаётся» — что получают роверы
+    {
+      const sets = [];
+      const stream = pos && pos.source === 'rtcm' ? pos.ecef : null;
+      const cat = row.x !== null ? [row.x, row.y, row.z] : null;
+      const itrf = lists.subnets.map((g) => ({ g, a: (g.accepted || {})[row.code] })).filter((x) => x.a);
+      const gap = (a, b) => (a && b ? Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : null);
+      const plainPoints = (row.mountpoints || []).filter((name) => !lists.networks.some((n) => n.points.some((p) => p.name === name)));
+      // Что раздаёт обычная точка станции: поток как пришёл либо координаты каталога
+      const served = row.send_catalog && cat ? 'catalog' : 'stream';
+      const main = served === 'catalog' ? cat : stream;
+      if (stream) {
+        const same = gap(stream, cat);
+        const near = itrf.length ? gap(stream, [itrf[0].a.x, itrf[0].a.y, itrf[0].a.z]) : null;
+        const sys = same !== null && same < 0.001 ? 'совпадает с каталогом сети 1' : (near !== null && near < 0.05 ? 'совпадает с ITRF2014' : (cat ? 'свои координаты базы, с каталогом не совпадают' : 'как передаёт база'));
+        sets.push({ cls: 'is-stream', name: 'Поток базы', sys, v: stream, on: served === 'stream' ? plainPoints : [] });
+      }
+      if (cat) sets.push({ cls: 'is-cat', name: 'Каталог · сеть 1', sys: 'смещённые, как раздавал Eagle; для работы в МСК', v: cat, on: served === 'catalog' ? plainPoints : [] });
+      for (const { g, a } of itrf) sets.push({ cls: 'is-itrf', name: `ITRF2014 · подсеть ${g.name}`, sys: a.quality === 'ppp' ? `PPP-AR${a.days ? `, среднее по ${a.days} сут.` : ', разовый расчёт'}` : 'сетевой расчёт от опорной', v: [a.x, a.y, a.z], on: [] });
+      for (const n of lists.networks) {
+        const r = ((n.release || {}).stations || {})[row.code];
+        const p = n.points.find((x) => x.station === row.code);
+        if (r) sets.push({ cls: n.kind === 'local' ? 'is-net' : 'is-itrf', name: `Сеть ${n.name} · версия ${n.version}`, sys: n.kind === 'local' ? 'согласованные, в системе сети 1' : 'ITRF2014', v: [r.x, r.y, r.z], on: p ? [p.name] : [] });
+      }
+      if (sets.length) {
+        parts.push(section('Координаты станции', 'X, Y, Z, м', `<div class="adm-coords">${sets.map((c) => {
+          const d = main && c.v !== main ? gap(c.v, main) : null;
+          return `<div class="adm-coordset ${c.cls} ${c.on.length ? 'is-served' : ''}"><p><b>${esc(c.name)}</b>${c.on.length ? `<span class="adm-served">раздаётся: ${esc(c.on.join(', '))}</span>` : ''}</p>
+            <p class="fig">${Number(c.v[0]).toFixed(4)}&ensp;${Number(c.v[1]).toFixed(4)}&ensp;${Number(c.v[2]).toFixed(4)}</p><p class="adm-coordsys">${esc(c.sys)}${d === null ? '' : ` · ${d < 0.0005 ? 'те же, что раздаются' : `${num(d, d < 1 ? 3 : 2)}${NBSP}м от раздаваемых`}`}</p></div>`;
+        }).join('')}</div>${stream && cat && !row.send_catalog && gap(stream, cat) > 0.001 ? `<p class="notice">База шлёт координаты, которые отличаются от каталога сети 1 на ${num(gap(stream, cat), 3)}${NBSP}м, и роверы получают их. Чтобы раздавались прежние, включите в карточке «Раздавать роверам эти координаты».</p>` : ''}`));
+      }
+    }
+
+    // Связь за сутки: полоса времени и счёт обрывов из журнала
+    {
+      if (Date.now() - out.at > 30000) loadOutages();
+      const o = out.data ? out.data.stations.find((x) => x.code === row.code) : null;
+      if (o) parts.push(section(`Связь за ${periodName(out.data.hours)}`, `${share(o.availability)}${NBSP}%`, `${timeline(o, out.data)}<p class="source">${o.count ? `Обрывов: ${o.count}, простой ${span(o.down_s)}, самый долгий ${span(o.longest_s)}.` : 'Обрывов не было.'} Поток: ${esc(o.source)}.</p>`));
     }
 
     // Спутники в слежении: столбик — уровень сигнала
@@ -1165,6 +1210,74 @@
     if (event.target.closest('#detail-close')) { picked = null; render(); }
     if (event.target.closest('#detail-edit')) openForm(rows.find((r) => r.id === picked));
     if (event.target.closest('#detail-toggle')) toggleStation(rows.find((r) => r.id === picked));
+  });
+
+  // ---------- Журнал обрывов связи ----------
+  // Обрывы пишет служба приёма, хранит база. Здесь — полосы времени по станциям и список.
+
+  const out = { hours: 24, data: null, at: 0, busy: false };
+  const PERIODS = [[24, '24 часа'], [72, '3 дня'], [168, '7 дней'], [720, '30 дней']];
+  const periodName = (h) => (PERIODS.find((p) => p[0] === h) || [0, `${h} ч`])[1];
+  const span = (sec) => { const v = Math.round(sec); return v < 60 ? `${v}${NBSP}с` : (v < 3600 ? `${Math.floor(v / 60)}${NBSP}мин${v % 60 ? ` ${v % 60}${NBSP}с` : ''}` : `${Math.floor(v / 3600)}${NBSP}ч ${Math.floor((v % 3600) / 60)}${NBSP}мин`); };
+  const share = (a) => (a >= 0.99995 ? '100' : num(a * 100, a >= 0.999 ? 3 : 2));
+
+  async function loadOutages(force) {
+    if (out.busy || (!force && Date.now() - out.at < 30000)) return;
+    out.busy = true;
+    const res = await api(`/api/admin/outages?hours=${out.hours}`);
+    out.busy = false;
+    if (!res.ok) return;
+    out.data = res.data;
+    out.at = Date.now();
+    if (view === 'outages') renderOutages(); else if (view === 'stations' || view === 'subnets') renderDetail();
+  }
+
+  // Полоса времени станции: зелёное — на связи, красное — обрыв, серое — не работал сервер
+  function timeline(st, d) {
+    const t0 = Date.parse(d.from);
+    const len = Math.max(Date.parse(d.to) - t0, 1);
+    return `<div class="adm-tl">${st.items.map((i) => {
+      const a = Math.max(0, (Date.parse(i.from) - t0) / len * 100);
+      const w = Math.max(0, Math.min(100 - a, (Date.parse(i.to) - Date.parse(i.from)) / len * 100));
+      return `<i class="is-${i.kind}${i.open ? ' is-open' : ''}" style="left:${a.toFixed(3)}%;width:${w.toFixed(3)}%" title="${esc(`${when(i.from)} — ${i.open ? 'до сих пор' : span(i.seconds)}${i.reason ? `: ${i.reason}` : ''}`)}"></i>`;
+    }).join('')}</div>`;
+  }
+
+  function renderOutages() {
+    loadOutages();
+    const d = out.data;
+    const chips = PERIODS.map(([h, name]) => `<button class="adm-chip" type="button" data-hours="${h}" aria-current="${h === out.hours}">${name}</button>`).join('');
+    if (!d) { out.html = ''; $('out-box').innerHTML = `<h2 class="ins-title adm-list-head"><span>Обрывы связи</span><span class="adm-list-tools">${chips}</span></h2><p class="hint">Загружаем журнал…</p>`; return; }
+    const on = d.stations.filter((x) => x.enabled);
+    const total = on.reduce((a, x) => a + x.count, 0);
+    const down = on.reduce((a, x) => a + x.down_s, 0);
+    const avail = on.length ? on.reduce((a, x) => a + x.availability, 0) / on.length : 1;
+    const worst = [...on].sort((a, b) => b.count - a.count || b.down_s - a.down_s)[0];
+    const fig = (value, label, cls) => `<div class="adm-figure glass ${cls || ''}"><b>${value}</b><span>${label}</span></div>`;
+    const short = Date.parse(d.to) - Date.parse(d.from) < d.hours * 3600000 - 60000;
+    const list = [...on].sort((a, b) => b.count - a.count || b.down_s - a.down_s || a.code.localeCompare(b.code));
+    const events = on.flatMap((x) => x.items.filter((i) => i.kind === 'link').map((i) => ({ ...i, code: x.code }))).sort((a, b) => Date.parse(b.from) - Date.parse(a.from)).slice(0, 200);
+    const mid = new Date((Date.parse(d.from) + Date.parse(d.to)) / 2).toISOString();
+    const html = `<h2 class="ins-title adm-list-head"><span>Обрывы связи</span><span class="adm-list-tools">${chips}</span></h2>
+      <div class="adm-figures adm-out-figures">${fig(String(total), `${plural(total, 'обрыв', 'обрыва', 'обрывов')} за ${periodName(d.hours)}`, total ? 'is-warn' : 'is-good')}${fig(down ? span(down) : '0', 'общий простой станций')}
+        ${fig(`${share(avail)}${NBSP}%`, 'сеть на связи', avail > 0.999 ? 'is-good' : 'is-warn')}${fig(worst && worst.count ? esc(worst.code) : '—', worst && worst.count ? `чаще всех: ${worst.count}` : 'обрывов нет')}</div>
+      ${short ? `<p class="hint">Журнал ведётся с ${when(d.journal_start)}: полосы показывают время с этого момента.</p>` : ''}
+      <div class="adm-out">${list.map((x) => `<div class="adm-out-row ${x.open ? 'is-open' : ''}"><span class="fig adm-out-code">${esc(x.code)}</span><span class="adm-src ${x.source === 'напрямую' ? 'is-direct' : ''}">${esc(x.source)}</span>
+        ${timeline(x, d)}<span class="fig" title="Обрывов">${x.count || '·'}</span><span class="fig" title="Простой">${x.down_s ? span(x.down_s) : '·'}</span><span class="fig adm-out-share" title="Доля времени на связи">${share(x.availability)}${NBSP}%</span></div>`).join('')}
+        <div class="adm-out-row is-axis"><span></span><span></span><div class="adm-tl-axis"><span>${when(d.from)}</span><span>${when(mid)}</span><span>сейчас</span></div><span>обрывов</span><span>простой</span><span>на связи</span></div></div>
+      <p class="hint"><i class="adm-key is-link"></i>обрыв связи со станцией <i class="adm-key is-service"></i>не работал сервер приёма (в счёт обрывов станции не идёт) <i class="adm-key is-direct"></i>база шлёт напрямую</p>
+      <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Начало</th><th>Станция</th><th>Длилось</th><th>Причина</th><th>Откуда шёл поток</th></tr></thead>
+        <tbody>${events.map((i) => `<tr><td>${when(i.from)}</td><td><span class="fig">${esc(i.code)}</span></td><td class="fig">${i.open ? '<span class="is-fail">до сих пор</span>' : span(i.seconds)}</td><td>${esc(i.reason || '—')}</td><td>${esc(i.source || '—')}</td></tr>`).join('') || '<tr><td colspan="5">Обрывов за это время не было</td></tr>'}</tbody></table></div>`;
+    // Страница перерисовывается только при изменениях: прокрутка списка не сбивается
+    if (out.html !== html) { out.html = html; $('out-box').innerHTML = html; }
+  }
+  $('out-box').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-hours]');
+    if (!chip) return;
+    out.hours = Number(chip.dataset.hours);
+    out.data = null;
+    renderOutages();
+    loadOutages(true);
   });
 
   // ---------- Подсети ----------
