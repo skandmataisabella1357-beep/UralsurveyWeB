@@ -630,3 +630,34 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 
 /* Разрыв между двумя рядами плиток одного блока */
 .adm-opt-gap { flex-basis: 100%; height: 0; }
+
+/* Стороны сети VRS на карте: свечение своего цвета, по готовой стороне бежит свет */
+.adm-vrs-line { filter: drop-shadow(0 0 3px currentColor); }
+.adm-vrs-line.is-ready { color: #5df2b0; }
+.adm-vrs-line.is-warm { color: #ffc56b; }
+.adm-vrs-line.is-cold { color: #ff5d7d; }
+.adm-vrs-line.is-idle { color: #8a86a8; filter: none; }
+.adm-vrs-flow { stroke-dasharray: 2 26; animation: adm-vrs-run 2.6s linear infinite; filter: drop-shadow(0 0 3px #5df2b0); mix-blend-mode: screen; }
+.adm-vrs-flow.is-warm { animation-duration: 5s; opacity: 0.55; filter: drop-shadow(0 0 3px #ffc56b); }
+.adm-vrs-halo { filter: drop-shadow(0 0 5px currentColor); animation: adm-vrs-breathe 3.6s ease-in-out infinite; }
+.adm-vrs-beam { stroke-dasharray: 6 5; animation: adm-vrs-run 1.4s linear infinite; filter: drop-shadow(0 0 4px #84c8ff); }
+.adm-vrs-aux { filter: drop-shadow(0 0 2px #84c8ff); }
+.adm-vrs-base { animation: adm-vrs-spin 9s linear infinite; transform-box: fill-box; transform-origin: center; filter: drop-shadow(0 0 5px #84c8ff); }
+@keyframes adm-vrs-run { to { stroke-dashoffset: -28; } }
+@keyframes adm-vrs-breathe { 50% { stroke-opacity: 0.2; fill-opacity: 0.03; } }
+@keyframes adm-vrs-spin { to { transform: rotate(360deg); } }
+:root[data-theme='light'] .adm-vrs-flow { mix-blend-mode: normal; stroke: #0f7a55; filter: none; }
+:root[data-theme='light'] .adm-vrs-line.is-ready { stroke: #1f9d6b; }
+:root[data-theme='light'] .adm-vrs-line.is-warm { stroke: #c98319; }
+:root[data-theme='light'] .adm-vrs-line.is-cold { stroke: #d23b5c; }
+@media (prefers-reduced-motion: reduce) { .adm-vrs-flow, .adm-vrs-beam, .adm-vrs-halo, .adm-vrs-base { animation: none; } }
+
+/* Ионосфера над сетью VRS: спокойная, умеренная, неровная, буря */
+.adm-kind.is-iono0 { --tone: #7fe0b4; }
+.adm-kind.is-iono1 { --tone: #84c8ff; }
+.adm-kind.is-iono2 { --tone: #ffc48e; }
+.adm-kind.is-iono3 { --tone: #ff8fa3; }
+:root[data-theme='light'] .adm-kind.is-iono0 { --tone: #1f9d6b; }
+:root[data-theme='light'] .adm-kind.is-iono1 { --tone: #2f86cf; }
+:root[data-theme='light'] .adm-kind.is-iono2 { --tone: #a8641a; }
+:root[data-theme='light'] .adm-kind.is-iono3 { --tone: #c22a4a; }

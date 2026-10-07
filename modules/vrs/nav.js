@@ -8,10 +8,12 @@ const CLIGHT = 299792458.0;
 const WEEK = 604800;
 const GPS_EPOCH_MS = Date.UTC(1980, 0, 6);
 const CONST = {
-  G: { mu: 3.986005e14, omge: 7.2921151467e-5, max: 7200, shift: 0 },
+  G: { mu: 3.986005e14, omge: 7.2921151467e-5, max: 10800, shift: 0 },
   J: { mu: 3.986005e14, omge: 7.2921151467e-5, max: 7200, shift: 0 },
   E: { mu: 3.986004418e14, omge: 7.2921151467e-5, max: 10800, shift: 0 },
-  C: { mu: 3.986004418e14, omge: 7.292115e-5, max: 3900, shift: 14 },
+  // Эфемериды BeiDou обновляются раз в час, а архив отдаёт их с опозданием: срок годности взят с запасом.
+  // Ошибка орбиты в несколько метров на разностях между станциями — миллиметры, и сеть её поправляет.
+  C: { mu: 3.986004418e14, omge: 7.292115e-5, max: 9000, shift: 14 },
 };
 
 const num = (s) => { const v = Number(String(s).trim().replace(/[dD]/, 'e')); return Number.isFinite(v) ? v : 0; };

@@ -34,6 +34,8 @@ const DEFAULTS = {
   coordSigma: 0.02, // м: насколько вектор между станциями может отличаться от заданных координат (0 — верить полностью)
   geoSmooth: 180, // с: сглаживание геометрической поправки спутника (гасит переотражения)
   ionoSmooth: 60, // с: сглаживание ионосферной поправки спутника
+  auto: true, // самонастройка: при неровной ионосфере сторона сама расширяет ожидаемый остаток
+  roughSec: 300, // с: за сколько усредняется неровность ионосферы
   wlMinSec: 30, // сколько секунд спутник в фильтре до закрепления широкой полосы
   wlSigma: 0.15, // допустимая ошибка оценки широкой полосы, циклов
   wlFrac: 0.25, // и отклонение от целого
@@ -159,6 +161,9 @@ class Baseline {
     this.km = Math.hypot(a.ecef[0] - b.ecef[0], a.ecef[1] - b.ecef[1], a.ecef[2] - b.ecef[2]) / 1000;
     this.o = { ...DEFAULTS, ...options };
     this.ionoSigma = this.o.ionoBase + this.o.ionoPpm * 1e-3 * this.km;
+    this.ionoSigma0 = this.ionoSigma; // как задано настройками; ionoSigma — как есть сейчас
+    this.rough2 = null; // неровность ионосферы: средний квадрат остатка спутника сверх общего наклона, м²
+    this.smooth = this.o.ionoSmooth; // сглаживание ионосферной поправки сейчас (сеть может укоротить)
     this.sats = new Map(); // 'G05' -> состояние спутника на этой стороне
     this.memory = new Map(); // 'G05' -> последние закреплённые поправки, для восстановления после пропуска
     this.cum = {}; // накопленный общий ход поправок по системам
@@ -334,6 +339,7 @@ class Baseline {
       if (!kf.has(`bw${sys}`)) kf.add(`bw${sys}`, 0, 0.25);
     }
     const ztd = kf.get('ztd');
+    const rough = [];
     // Закреплённые спутники сначала проверяются: комбинация без ионосферы должна сходиться,
     // а ионосфера — не уходить от остальных. Общий сдвиг эпохи — медиана по спутникам.
     const gone = new Set();
@@ -344,6 +350,8 @@ class Baseline {
       const mid = middle(res);
       const ions = fixed.map(([, s]) => this.iono(s) - this.slope(s));
       const ionoMid = middle(ions);
+      // Неровность считается без самых низких спутников: там остаток — больше тропосфера и переотражения
+      fixed.forEach(([, s], i) => { if (s.el > 20 * Math.PI / 180) rough.push((ions[i] - ionoMid) ** 2); });
       fixed.forEach(([sat, s], i) => {
         s.res = res[i] - mid;
         s.bad = Math.abs(s.res) > o.outlier ? s.bad + 1 : 0;
@@ -351,6 +359,14 @@ class Baseline {
         s.badIono = Math.abs(ions[i] - ionoMid) > o.ionoOut * this.ionoSigma + 0.05 ? (s.badIono || 0) + 1 : 0;
         if (s.badIono >= o.outlierEpochs) { this.drop(sat, 'iono'); gone.add(sat); }
       });
+    }
+    if (rough.length >= 6) {
+      // Медиана устойчива к одному плохому спутнику; 1,4826² переводит её в дисперсию
+      const now2 = middle(rough) * 2.198;
+      const gain = this.rough2 === null ? 1 : 1 - Math.exp(-(dt || o.step) / o.roughSec);
+      this.rough2 = this.rough2 === null ? now2 : this.rough2 + gain * (now2 - this.rough2);
+      // Самонастройка: ожидаемый остаток не меньше наблюдаемого с запасом, но не больше четырёх заданных
+      if (o.auto) this.ionoSigma = Math.min(4 * this.ionoSigma0, Math.max(this.ionoSigma0, 1.5 * Math.sqrt(this.rough2)));
     }
     for (const [sat, s] of list) {
       if (gone.has(sat)) continue;
@@ -489,7 +505,7 @@ class Baseline {
     // настоящая поправка медленно. Общие часы системы убраны — в разностях спутников их нет.
     const ztd = this.kf.get('ztd');
     const gain = this.prev ? 1 - Math.exp(-(t - this.prev) / this.o.geoSmooth) : 1;
-    const gainIono = this.prev ? 1 - Math.exp(-(t - this.prev) / Math.max(this.o.ionoSmooth, 0.1)) : 1;
+    const gainIono = this.prev ? 1 - Math.exp(-(t - this.prev) / Math.max(this.smooth, 0.1)) : 1;
     for (const sys of Object.keys(PAIRS)) {
       const fixed = now.map((sat) => this.sats.get(sat)).filter((s) => s && s.sys === sys && s.n1 !== null);
       if (!fixed.length) continue;
@@ -523,6 +539,12 @@ class Baseline {
     this.prev = t;
   }
 
+  // Неровность ионосферы на стороне, мм на км: остаток спутника сверх общего наклона (95 %),
+  // отнесённый к длине стороны. Тот же смысл, что у индекса I95 в промышленных сетях.
+  index() {
+    return this.rough2 === null ? null : 1.96 * Math.sqrt(this.rough2) * 1000 / Math.max(this.km, 5);
+  }
+
   // Сводка для панели: сколько спутников видно, сколько закреплено
   summary() {
     const by = {};
@@ -536,6 +558,7 @@ class Baseline {
     const kf = this.kf;
     return {
       a: this.a.code, b: this.b.code, km: this.km, t: this.t, seen, fixed, by, ztd: kf.get('ztd'), ztdSigma: kf.sigma('ztd'),
+      index: this.index(), ionoSigma: this.ionoSigma,
       shift: [kf.get('dE'), kf.get('dN'), kf.get('dU')], grad: [kf.get('ia'), kf.get('in'), kf.get('ie')], count: { ...this.count },
     };
   }

@@ -55,7 +55,7 @@ const ztdAt = (p) => 0.02 + 0.0004 * p.north + 0.0003 * p.east; // м
 const slant = (el) => 1 / Math.sqrt(1 - (6371e3 * Math.cos(el) / (6371e3 + 350e3)) ** 2);
 
 // Наблюдения станции на эпоху t. amb — её целые (создаются по мере появления спутников).
-function observe(p, t, nav, amb, { clock = 0, exact = false } = {}) {
+function observe(p, t, nav, amb, { clock = 0, exact = false, rough = 0 } = {}) {
   const st = model.site(p.ecef);
   const raw = new Map();
   for (const [sat, list] of nav) {
@@ -64,7 +64,10 @@ function observe(p, t, nav, amb, { clock = 0, exact = false } = {}) {
     const dir = model.look(st, g.los);
     if (dir.el < 12 * D2R) continue;
     const geo = g.rho - g.clock + model.troposphere(st, dir.el) + model.mapWet(dir.el) * ztdAt(p) + clock;
-    const iono = slant(dir.el) * ionoAt(p);
+    // rough — неровность: у каждой пары «станция — спутник» своя добавка к ионосфере, метры в зените
+    const seed = Math.sin(sat.charCodeAt(0) * 7.1 + sat.charCodeAt(1) * 131.7 + sat.charCodeAt(2) * 17.3 + p.code.charCodeAt(0) * 911.9) * 43758.5453;
+    const bump = rough ? rough * 2 * (seed - Math.floor(seed) - 0.5) : 0;
+    const iono = slant(dir.el) * (ionoAt(p) + bump);
     const sigs = new Map();
     F[eph.sys].forEach((f, k) => {
       const key = `${sat}.${k}`;
@@ -388,4 +391,42 @@ test('VRS: служба целиком — потоки станций с шин
     await bus.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('VRS: неровная ионосфера замечается, и сеть сама становится осторожнее', () => {
+  const nav = constellation();
+  const run = (rough, auto) => {
+    const net = new Network({ stations: STATIONS.map((s) => ({ code: s.code, ecef: s.ecef })), nav, options: { maxKm: 120, auto }, baseline: { step: 5, auto } });
+    const amb = new Map(STATIONS.map((s) => [s.code, new Map()]));
+    for (let t = T0; t <= T0 + 400; t += 5) for (const s of STATIONS) net.push(s.code, t, observe(s, t, nav, amb.get(s.code), { clock: 2, rough }));
+    return net;
+  };
+  // Гладкая ионосфера (только наклон): индекс около нуля, сеть ничего не меняет
+  const calm = run(0, true);
+  const a = calm.tune();
+  assert.ok(a.index !== null && a.index < 0.5, `спокойная: ${a.index}`);
+  assert.strictEqual(a.level, 0);
+  assert.ok(calm.baselines.every((bl) => bl.ionoSigma === bl.ionoSigma0 && bl.smooth === bl.o.ionoSmooth));
+  // Неровная: у каждой станции свой остаток в сантиметры на спутник
+  const wild = run(0.03, true);
+  const b = wild.tune();
+  assert.ok(b.index > 0.8 && b.index > 3 * a.index, `неровная: ${b.index} против спокойной ${a.index}`);
+  assert.ok(wild.baselines.some((bl) => bl.ionoSigma > bl.ionoSigma0), 'стороны расширили ожидаемый остаток');
+  assert.ok(wild.baselines.every((bl) => bl.ionoSigma <= 4 * bl.ionoSigma0 + 1e-12));
+  // Целые при этом по-прежнему настоящие
+  for (const bl of wild.baselines) assert.strictEqual(bl.count.restart, 0, `${bl.a.code}-${bl.b.code} начиналась заново`);
+  // Без самонастройки числа остаются как заданы
+  const fixed = run(0.03, false);
+  fixed.tune();
+  assert.ok(fixed.baselines.every((bl) => bl.ionoSigma === bl.ionoSigma0 && bl.smooth === bl.o.ionoSmooth));
+  // Уровень «неровная» поднимает маску для ровера и укорачивает сглаживание
+  wild.level = 2;
+  const low = wild.virtual(ROVER.ecef, { t: T0 + 400 });
+  wild.level = 0;
+  const all = wild.virtual(ROVER.ecef, { t: T0 + 400 });
+  assert.ok(low.sats.length <= all.sats.length);
+  assert.ok(low.sats.every((s) => s.el >= 15 * D2R - 1e-9), 'маска 10° поднята до 15°');
+  wild.baselines.forEach((bl) => { bl.rough2 = (0.01 * bl.km) ** 2; });
+  assert.strictEqual(wild.tune().level >= 2, true);
+  assert.ok(wild.baselines.every((bl) => bl.smooth === bl.o.ionoSmooth / 2));
 });

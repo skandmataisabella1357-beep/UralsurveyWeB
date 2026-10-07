@@ -1528,7 +1528,9 @@ class Store:
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
                 "max_shift": shifts[worst] if worst else None, "max_station": worst,
                 # Координаты могут остаться теми же, а измениться — параметры пересчёта, спутники, частота
-                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near") and same("vrs"))}
+                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near") and same("vrs") and same("subnet")),
+                # Сменился источник: основная сеть или другой расчётный модуль
+                "source_changed": bool(old) and not same("subnet")}
 
     def _network_view(self, conn, row: dict) -> dict:
         out = _jsonable(row)
@@ -1571,7 +1573,8 @@ class Store:
         """Что изменится при выпуске: для новой сети (subnet_id, kind) или для следующей версии (network_id)."""
         with self.db.connection() as conn:
             net = self._network(conn, int(data["network_id"])) if data.get("network_id") else None
-            subnet_id = net["subnet_id"] if net else data.get("subnet_id")
+            # У готовой сети расчётный модуль прежний, если в запросе не назван другой (смена источника)
+            subnet_id = data.get("subnet_id") if isinstance(data.get("subnet_id"), int) or not net else net["subnet_id"]
             # Рецепт — из запроса; иначе действующий рецепт сети
             recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else (data.get("kind") or (net["recipe"] or net["kind"] if net else None)))
             if recipe["source"] == "subnet" and not isinstance(subnet_id, int):
@@ -1621,15 +1624,19 @@ class Store:
                                                   "port": self._network_port(conn, data.get("port"))})
             return self._network_store(conn, who, net, release, "сеть выпущена")
 
-    def network_release(self, who: dict, network_id: int, recipe=None) -> dict:
+    def network_release(self, who: dict, network_id: int, recipe=None, subnet_id=None) -> dict:
         """Новая версия сети: свежий снимок координат из её расчётного модуля, с прежним составом блоков
-        или с изменённым. До выпуска сеть раздаёт прежнее."""
+        или с изменённым. До выпуска сеть раздаёт прежнее. Источник тоже можно сменить: основная сеть
+        либо другой расчётный модуль (subnet_id) — имена точек и порт остаются."""
         with self.db.transaction() as conn:
             net = self._network(conn, network_id, lock=True)
             recipe = self._recipe(recipe if recipe is not None else (net["recipe"] or net["kind"]))
-            if recipe["source"] == "subnet" and net["subnet_id"] is None:
-                raise Problem("Расчётный модуль, из которого выпускалась эта сеть, удалён: новую версию выпустить не из чего.")
-            release = self._network_build(conn, self._subnet(conn, net["subnet_id"], lock=True) if recipe["source"] == "subnet" else None, recipe)
+            source_id = None if recipe["source"] == "main" else (subnet_id if isinstance(subnet_id, int) else net["subnet_id"])
+            if recipe["source"] == "subnet" and source_id is None:
+                raise Problem("Расчётный модуль, из которого выпускалась эта сеть, удалён: выберите источником другой модуль или основную сеть.")
+            release = self._network_build(conn, self._subnet(conn, source_id, lock=True) if recipe["source"] == "subnet" else None, recipe)
+            if source_id != net["subnet_id"]:
+                net = self._update(conn, "networks", network_id, {"subnet_id": source_id})
             diff = self._network_diff(release, net["release"])
             if not diff["added"] and not diff["gone"] and not any(diff["shifts"].values()) and not diff["params_changed"]:
                 raise Problem("Изменений нет: координаты в расчётном модуле и состав сети те же, что в действующей версии.")
@@ -1685,7 +1692,14 @@ class Store:
                 raise Problem("Нет такой прежней версии сети.")
             release = {k: v for k, v in old["release"].items() if k not in ("version", "at", "by")}
             if isinstance(release.get("recipe"), dict):
-                net = self._update(conn, "networks", network_id, {"recipe": Jsonb(release["recipe"]), "kind": self._recipe_kind(release["recipe"])})
+                fields = {"recipe": Jsonb(release["recipe"]), "kind": self._recipe_kind(release["recipe"])}
+                if release["recipe"].get("source") == "main":
+                    fields["subnet_id"] = None
+                elif release.get("subnet"):
+                    back = conn.execute("SELECT id FROM subnets WHERE name = %s", (release["subnet"],)).fetchone()
+                    if back:
+                        fields["subnet_id"] = back["id"]
+                net = self._update(conn, "networks", network_id, fields)
             return self._network_store(conn, who, net, {**release, "restored": version}, "возвращена прежняя версия сети")
 
     def network_update(self, who: dict, network_id: int, data: dict) -> dict:

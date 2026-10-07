@@ -117,7 +117,7 @@ class App:
             r("POST", r"/api/admin/networks/preview", lambda q: (200, store.network_preview(q.body)), "admin"),
             r("PATCH", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_update(q.who, q.id, q.body)), "admin"),
             r("DELETE", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_delete(q.who, q.id) or {}), "admin"),
-            r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id, q.body.get("recipe"))), "admin"),
+            r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id, q.body.get("recipe"), q.body.get("subnet_id"))), "admin"),
             r("POST", r"/api/admin/networks/(\d+)/vrs", lambda q: (200, store.network_vrs(q.who, q.id, q.body.get("options"))), "admin"),
             r("GET", r"/api/admin/vrs", lambda q: (200, self.vrs_state()), "operator"),
             r("POST", r"/api/admin/networks/(\d+)/rollback", lambda q: (200, store.network_rollback(q.who, q.id, int(q.body.get("version") or 0))), "admin"),

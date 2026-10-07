@@ -109,7 +109,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
         e.net = new Network({
           stations: stations.map((s) => ({ code: s.code, ecef: s.ecef })), nav,
           options: { maxKm: o.maxKm, maxLinks: o.maxLinks },
-          baseline: { mask: o.arMask, ionoPpm: o.ionoPpm, gradPpm: o.gradPpm, ztdSigma: o.ztdMm / 1000, coordSigma: o.coordMm / 1000, holdSec: o.holdSec, geoSmooth: o.geoSmooth, ionoSmooth: o.ionoSmooth },
+          baseline: { mask: o.arMask, ionoPpm: o.ionoPpm, gradPpm: o.gradPpm, ztdSigma: o.ztdMm / 1000, coordSigma: o.coordMm / 1000, holdSec: o.holdSec, geoSmooth: o.geoSmooth, ionoSmooth: o.ionoSmooth, auto: o.auto },
         });
         engines.set(task.id, e);
         for (const s of sessions.values()) if (s.engine && s.engine.id === task.id) { s.engine = e; s.master = null; }
@@ -119,7 +119,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       e.options = o;
       e.stations = stations;
       // На выдачу: настройки, которые действуют сразу
-      Object.assign(e.net.o, { aux: o.aux, minAux: o.minAux, method: o.method, strict: o.strict, mask: o.mask, systems: o.systems, limit: o.limit, maxAge: o.maxAge, power: o.power });
+      Object.assign(e.net.o, { auto: o.auto, aux: o.aux, minAux: o.minAux, method: o.method, strict: o.strict, mask: o.mask, systems: o.systems, limit: o.limit, maxAge: o.maxAge, power: o.power });
       // Сдвиг из системы расчёта в систему, в которой сеть объявляет координаты базы
       e.shifts = stations.filter((s) => Array.isArray(s.out) && s.out.length === 3 && s.out.every(Number.isFinite)).map((s) => ({ ecef: s.ecef, d: [s.out[0] - s.ecef[0], s.out[1] - s.ecef[1], s.out[2] - s.ecef[2]] }));
     }
@@ -303,6 +303,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
 
   function selfCheck() {
     for (const e of engines.values()) {
+      try { e.net.tune(); } catch (err) { e.fault = err.message; }
       for (const st of e.net.stations.values()) {
         let c = null;
         try { c = e.net.check(st.code); } catch (err) { e.fault = err.message; }
@@ -352,6 +353,8 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     const rms = (list, k) => { const v = list.filter((c) => Number.isFinite(c[k])); return v.length ? Math.sqrt(v.reduce((a, c) => a + c[k] * c[k], 0) / v.length) : null; };
     return {
       id: e.id, name: e.name, title: e.title, options: e.options, builtAt: e.builtAt, fault: e.fault || '',
+      // Ионосфера над сетью: неровность в мм на км и уровень (0 спокойная … 3 буря)
+      iono: { index: e.net.index === null || e.net.index === undefined ? null : Math.round(e.net.index * 10) / 10, level: e.net.level || 0, auto: Boolean(e.options.auto) },
       stations: [...e.net.stations.values()].map((st) => {
         const list = (e.checks.get(st.code) || []).filter((c) => c.phase !== undefined);
         const last = list[list.length - 1] || null;
@@ -365,7 +368,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       }),
       baselines: e.net.baselines.map((bl) => {
         const s = bl.summary();
-        return { a: s.a, b: s.b, km: Math.round(s.km * 10) / 10, ageSec: s.t ? Math.round(gps - s.t) : null, seen: s.seen, fixed: s.fixed, by: s.by, ztd: mm(s.ztd), shift: s.shift.map(mm), grad: s.grad.map(mm), count: s.count, triangles: bl.tri, sinceSec: bl.started ? Math.round(gps - bl.started) : null };
+        return { a: s.a, b: s.b, km: Math.round(s.km * 10) / 10, ageSec: s.t ? Math.round(gps - s.t) : null, seen: s.seen, fixed: s.fixed, by: s.by, ztd: mm(s.ztd), index: s.index === null ? null : Math.round(s.index * 10) / 10, ionoSigma: mm(s.ionoSigma), shift: s.shift.map(mm), grad: s.grad.map(mm), count: s.count, triangles: bl.tri, sinceSec: bl.started ? Math.round(gps - bl.started) : null };
       }),
       triangles: e.net.triangles.length,
       sessions: [...sessions.values()].filter((s) => s.engine === e).map((s) => ({

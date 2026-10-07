@@ -762,6 +762,18 @@ class AdminTest(unittest.TestCase):
         self.assertIn("PART_NEAR", [x["name"] for x in d["auto"]])
         status, nmain, _ = a.call("POST", f"/api/admin/networks/{nmain['id']}/release", {"recipe": {"source": "main", "stations": ["BLK0", "BLK1", "BLK2"], "rate": 5}})
         self.assertEqual((status, nmain["version"], len(nmain["points"]), nmain["recipe"]["rate"]), (200, 2, 3, 5))
+        # Источник готовой сети можно сменить: из основной сети — на расчётный модуль и обратно возвратом версии
+        swap = {"source": "subnet", "coords": "itrf2014", "stations": ["BLK0", "BLK1", "BLK2"]}
+        look2 = a.call("POST", "/api/admin/networks/preview", {"network_id": nmain["id"], "subnet_id": sub["id"], "recipe": swap})[1]
+        self.assertEqual((look2["source_changed"], look2["params_changed"], look2["stations"]), (True, True, 3), look2)
+        status, nmain, _ = a.call("POST", f"/api/admin/networks/{nmain['id']}/release", {"recipe": swap, "subnet_id": sub["id"]})
+        self.assertEqual((status, nmain["version"], nmain["subnet"], nmain["subnet_id"], nmain["recipe"]["source"], sorted(p["name"] for p in nmain["points"])),
+                         (200, 3, "BLOCKS", sub["id"], "subnet", ["PART_BLK0", "PART_BLK1", "PART_BLK2"]), nmain)
+        self.assertEqual(round(nmain["release"]["stations"]["BLK1"]["x"], 4), round(true[1][0], 4))
+        points = {p["name"]: p for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
+        self.assertEqual(points["PART_BLK1"]["position"], [round(v, 4) for v in true[1]])
+        status, nmain, _ = a.call("POST", f"/api/admin/networks/{nmain['id']}/rollback", {"version": 2})
+        self.assertEqual((status, nmain["version"], nmain["subnet"], nmain["subnet_id"], nmain["recipe"]["source"]), (200, 4, None, None, "main"), nmain)
         self.assertEqual(a.call("POST", "/api/admin/networks", {"name": "nosrc", "recipe": {"coords": "itrf2014"}})[0], 400, "без расчётного модуля и не из основной сети")
         self.assertEqual(a.call("DELETE", base)[0], 200)
         for n in (n20, ngsk, nflow, nmain):

@@ -21,6 +21,8 @@ const DEFAULTS = {
   method: 'plane', // plane — плоскость по соседям, idw — по обратным расстояниям, none — без поправок сети
   power: 2, // степень расстояния для idw
   limit: 1.5, // предел суммы весов соседей: дальше поправки за край сети не продолжаются
+  auto: true, // самонастройка по ионосфере: при неровной — выше маска и короче сглаживание
+  autoMask: 5, // градусов: на столько поднимается маска при неровной ионосфере
   maxAge: 30, // с, поправка старше не применяется
   bufferSec: 45, // с: столько станция может отставать от соседней, чтобы их эпохи ещё сошлись
   strict: true, // брать только спутники, прошедшие проверку замыканием треугольников
@@ -142,6 +144,18 @@ class Network {
   }
 
   setNav(nav) { this.nav = nav; }
+
+  // Ионосфера над сетью сейчас. index — неровность в мм на км (медиана по готовым сторонам),
+  // level: 0 спокойная (до 2), 1 умеренная (до 4), 2 неровная (до 8), 3 буря.
+  // При самонастройке неровная ионосфера укорачивает сглаживание её поправки вдвое: она меняется
+  // быстрее, и запаздывание вреднее шума.
+  tune() {
+    const list = this.baselines.map((bl) => bl.index()).filter((v) => v !== null).sort((a, b) => a - b);
+    this.index = list.length ? list[Math.floor(list.length / 2)] : null;
+    this.level = this.index === null ? 0 : (this.index < 2 ? 0 : (this.index < 4 ? 1 : (this.index < 8 ? 2 : 3)));
+    for (const bl of this.baselines) bl.smooth = this.o.auto && this.level >= 2 ? bl.o.ionoSmooth / 2 : bl.o.ionoSmooth;
+    return { index: this.index, level: this.level };
+  }
 
   // Наблюдения станции за эпоху t (секунды GPS). raw: Map 'G05' -> Map сигнал -> { sig, pr, ph, lock, half, cnr }
   push(code, t, raw) {
@@ -281,7 +295,9 @@ class Network {
     const t = M.epoch.t;
     const net = this.interpolate(M.code, pos, t, options);
     const V = model.site(pos);
-    const mask = (options.mask === undefined ? this.o.mask : options.mask) * Math.PI / 180;
+    // При неровной ионосфере низкие спутники роверу не отдаются: у них поправка хуже всего
+    const lift = this.o.auto && this.level >= 2 ? this.o.autoMask : 0;
+    const mask = ((options.mask === undefined ? this.o.mask : options.mask) + lift) * Math.PI / 180;
     const sats = [];
     for (const [sat, e] of M.epoch.sats) {
       const c = net.sats.get(sat);

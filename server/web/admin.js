@@ -305,6 +305,7 @@
   const inScope = (code) => { const n = scopeNet(); return !n || n.points.some((p) => p.station === code); };
   function setScope(id) {
     scope = id || null;
+    pollVrsMap();
     try { localStorage.setItem('admin-scope', String(scope || '')); } catch (err) { /* не запомнится */ }
     if (picked && view === 'stations') { const row = rows.find((r) => r.id === picked); if (row && !inScope(row.code)) picked = null; }
     render();
@@ -530,11 +531,21 @@
     $('list-export').hidden = !v.export;
     if (v.export) $('list-export').href = v.export;
     if (v.custom === 'settings') return renderSettings();
-    $('list-count').textContent = rows.length ? String(rows.length) : '';
+    // В сети раздачи общие таблицы показывают только её: станции, точки, сеансы и отказы этой сети
+    const within = scopeNet();
+    const mine = (r) => {
+      if (!within) return true;
+      if (view === 'stations') return inScope(r.code);
+      if (view === 'mountpoints') return r.network_id === within.id || r.name === `${within.name}_VRS` || r.name === `${within.name}_NEAR`;
+      if (view === 'sessions' || view === 'refusals') return String(r.mountpoint || '').startsWith(`${within.name}_`);
+      return true;
+    };
+    const visible = rows.filter(mine).length;
+    $('list-count').textContent = rows.length ? (within && visible !== rows.length ? `${visible} из ${rows.length} · сеть ${within.name}` : String(rows.length)) : '';
     $('list-head').innerHTML = `<tr>${v.cols.map(([t]) => `<th>${t}</th>`).join('')}${v.rowAction ? '<th></th>' : ''}</tr>`;
-    $('list-body').innerHTML = rows.map((r, i) => `<tr data-row="${i}" aria-selected="${picked === r.id}">${v.cols.map(([, cell]) => `<td>${cell(r)}</td>`).join('')}${
-      v.rowAction ? `<td>${v.rowAction.when(r) ? `<button class="btn btn-quiet btn-small" type="button" data-act="${i}">${v.rowAction.label}</button>` : ''}</td>` : ''}</tr>`).join('')
-      || `<tr><td colspan="${v.cols.length + 1}">Записей нет</td></tr>`;
+    $('list-body').innerHTML = rows.map((r, i) => (!mine(r) ? '' : `<tr data-row="${i}" aria-selected="${picked === r.id}">${v.cols.map(([, cell]) => `<td>${cell(r)}</td>`).join('')}${
+      v.rowAction ? `<td>${v.rowAction.when(r) ? `<button class="btn btn-quiet btn-small" type="button" data-act="${i}">${v.rowAction.label}</button>` : ''}</td>` : ''}</tr>`)).join('')
+      || `<tr><td colspan="${v.cols.length + 1}">${within ? `У сети ${esc(within.name)} записей нет` : 'Записей нет'}</td></tr>`;
     if (v.map) renderMap();
     renderDetail();
   }
@@ -1135,6 +1146,7 @@
     drawZones();
     drawContour();
     drawVectors();
+    try { drawVrsMap(); } catch (err) { /* слой VRS ещё не заведён */ }
     drawOverlay();
   }
 
@@ -1441,7 +1453,7 @@
     const d = out.data;
     const chips = PERIODS.map(([h, name]) => `<button class="adm-chip" type="button" data-hours="${h}" aria-current="${h === out.hours}">${name}</button>`).join('');
     if (!d) { out.html = ''; $('out-box').innerHTML = `<h2 class="ins-title adm-list-head"><span>Обрывы связи</span><span class="adm-list-tools">${chips}</span></h2><p class="hint">Загружаем журнал…</p>`; return; }
-    const on = d.stations.filter((x) => x.enabled);
+    const on = d.stations.filter((x) => x.enabled && inScope(x.code));
     const total = on.reduce((a, x) => a + x.count, 0);
     const down = on.reduce((a, x) => a + x.down_s, 0);
     const avail = on.length ? on.reduce((a, x) => a + x.availability, 0) / on.length : 1;
@@ -1537,7 +1549,7 @@
     const where = (code) => { const st = liveOf(code); return st && st.position ? [st.position.lat, st.position.lon] : null; };
     // Линии перерисовываются только при новом расчёте или сдвиге станций: иначе подсказка и
     // закреплённое окно вектора пропадали бы при каждом обновлении состояния
-    const key = row ? JSON.stringify([row.id, row.results_at, row.stations.map((c) => (where(c) || []).map((v) => v.toFixed(5)))]) : '';
+    const key = row ? JSON.stringify([scope, row.id, row.results_at, row.stations.map((c) => (where(c) || []).map((v) => v.toFixed(5)))]) : '';
     if (key === sub.vectorsKey && Boolean(sub.vectors) === Boolean(row)) return;
     sub.vectorsKey = key;
     if (sub.vectors) { sub.vectors.remove(); sub.vectors = null; }
@@ -1547,6 +1559,8 @@
     // Стороны сети: все векторы расчёта; у прежних результатов — цепочка «сосед → станция»
     const list = row.results.vectors || Object.entries(row.results.stations).filter(([, r]) => r.from).map(([code, r]) => ({ a: r.from, b: code, length_km: r.length_km, quality: r.quality, sd: sd3(r), minutes: r.minutes }));
     for (const v of list) {
+      // В сети раздачи видны только векторы между её станциями: чужое на карту не попадает
+      if (!inScope(v.a) || !inScope(v.b)) continue;
       const a = where(v.a);
       const b = where(v.b);
       if (!a || !b) continue;
@@ -1569,7 +1583,8 @@
     }
     sub.vectors = L.layerGroup(lines).addTo(map);
     for (const line of lines) if (line._path && line.glow) line._path.style.filter = line.glow;
-    $('map-legend-name').textContent = `Векторы ${row.name}`;
+    const within = scopeNet();
+    $('map-legend-name').textContent = `Векторы ${row.name}${within ? ` · только станции сети ${within.name}` : ''}`;
   }
 
   // Координаты, которые станция сама передаёт в потоке (сообщения 1005/1006)
@@ -1631,11 +1646,14 @@
     const row = subRow();
     const body = $('sub-rows');
     if (!row || !body) return;
+    // В сети раздачи таблицы модуля показывают только её станции: расчёт общий, а смотрим своё
+    const within = scopeNet();
+    const shown = row.stations.filter(inScope);
     const got = (row.results && row.results.stations) || {};
     const acc = row.accepted || {};
     if (sub.step === 'calc') {
-      $('sub-status').textContent = subStatus(row);
-      body.innerHTML = row.stations.map((code) => {
+      $('sub-status').textContent = `${subStatus(row)}${within ? ` Показаны станции сети ${within.name}: ${shown.length} из ${row.stations.length}.` : ''}`;
+      body.innerHTML = shown.map((code) => {
         const r = got[code] || {};
         const [text, cls, why] = r.quality ? grade(r.quality, sd3(r), r.resid) : ['ждём', '', 'Расчёт ещё не дошёл до этой станции.'];
         const a = acc[code];
@@ -1651,7 +1669,7 @@
       const net = (row.results && row.results.stations) || {};
       $('sub-status').textContent = row.ppp_state === 'idle' ? 'PPP-AR ещё не запускался.'
         : (row.ppp_state === 'running' ? `PPP-AR запущен ${when(row.ppp_started_at)}. ${res.note || 'Идёт расчёт…'}` : `PPP-AR выполнен ${when(row.ppp_results_at)}${res.epoch ? `, эпоха ${num(res.epoch, 3)}` : ''}. ${res.note || ''}`);
-      body.innerHTML = row.stations.map((code) => {
+      body.innerHTML = shown.map((code) => {
         const r = st[code] || {};
         const n = net[code];
         const diff = r.x14 !== undefined && n && n.x !== undefined ? Math.hypot(r.x14 - n.x, r.y14 - n.y, r.z14 - n.z) : null;
@@ -1663,7 +1681,7 @@
       // Среднее по суточным расчётам: из него принимаются координаты расчётного модуля
       const mean = row.ppp_mean || { days: [], stations: {} };
       $('sub-daily').textContent = `${row.ppp_daily ? 'Суточный расчёт включён: каждые сутки считаются после 03:00 UTC следующего дня.' : 'Суточный расчёт выключен.'} ${mean.days.length ? `Посчитано суток: ${mean.days.length} (${mean.days[0]} — ${mean.days[mean.days.length - 1]}).` : 'Посчитанных суток пока нет: принять можно разовый расчёт из таблицы ниже.'}`;
-      $('sub-mean').innerHTML = row.stations.map((code) => {
+      $('sub-mean').innerHTML = shown.map((code) => {
         const m = mean.stations[code];
         const a = acc[code];
         const moved = m && a && a.quality === 'ppp' ? Math.hypot(m.x - a.x, m.y - a.y, m.z - a.z) : null;
@@ -1683,7 +1701,7 @@
         : `Привязка (${link.mode === 'full' ? 'семь параметров' : 'только сдвиг'}) рассчитана ${when(link.at)} по ${link.used.length} станциям. Средняя квадратическая невязка: в плане ${mm(link.rms_plan)} мм, по высоте ${mm(link.rms_height)} мм.${stale ? ' Координаты расчётного модуля приняты позже — пересчитайте привязку.' : ''}`;
       $('sub-params').innerHTML = p ? [['ΔX, м', num(p.tx, 4)], ['ΔY, м', num(p.ty, 4)], ['ΔZ, м', num(p.tz, 4)], ['ωx, ″', num(p.rx, 6)], ['ωy, ″', num(p.ry, 6)], ['ωz, ″', num(p.rz, 6)], ['m, ppm', num(p.m, 5)]]
         .map(([k, v]) => `<div><dt>${k}</dt><dd class="fig">${v}</dd></div>`).join('') : '';
-      body.innerHTML = row.stations.map((code) => {
+      body.innerHTML = shown.map((code) => {
         const a = acc[code];
         const s = lists.stations.find((x) => x.code === code);
         const has = s && s.x !== null;
@@ -2306,6 +2324,7 @@
       ${chip(up, up ? 'служба работает' : 'служба не отвечает', 'Служба VRS — отдельная часть сервера. Если она остановлена, обычные точки подключения работают как всегда.')}
       ${svc ? chip(!svc.nav.error && svc.nav.sats > 40, `эфемериды: ${svc.nav.sats}`, svc.nav.error ? `Эфемериды: ${svc.nav.error}` : `Орбиты спутников из открытого архива BKG, обновлены ${svc.nav.ageSec === null ? '—' : Math.round(svc.nav.ageSec / 60)} мин назад.`) : ''}
       ${svc ? chip(svc.load < 400, `нагрузка ${svc.load} мс/с`, 'Сколько миллисекунд сервер тратит на сетевой расчёт за каждую секунду.') : ''}
+      ${st && st.iono && st.iono.index !== null ? `<span class="adm-kind is-iono${st.iono.level}" title="Неровность ионосферы над сетью: остаток спутника сверх общего наклона, в миллиметрах на километр стороны. До 2 — спокойная, до 4 — умеренная, до 8 — неровная, выше — буря.${st.iono.auto ? (st.iono.level >= 2 ? ' Самонастройка сейчас действует: маска для ровера выше на 5°, сглаживание ионосферы вдвое короче.' : ' Самонастройка включена, вмешательство не требуется.') : ' Самонастройка выключена.'}">ионосфера ${['спокойная', 'умеренная', 'неровная', 'буря'][st.iono.level]} · ${String(st.iono.index).replace('.', ',')} мм/км</span>` : ''}
       ${svc ? chip(svc.casterLink, svc.casterLink ? 'раздача на связи' : 'раздача не подключена', 'Соединение службы раздачи со службой VRS: по нему роверы получают виртуальные базы.') : ''}</h2>`;
     let body = '';
     if (!on) {
@@ -2331,15 +2350,16 @@
         const ev = (c) => [c.slip ? `срывов ${c.slip}` : '', c.bridge ? `восстановлено ${c.bridge}` : '', c.rejoin ? `возвратов станции ${c.rejoin}` : '', c.refit + c.outlier + c.iono ? `пересмотров ${c.refit + c.outlier + c.iono}` : '', c.closure ? `не сошлось по треугольнику ${c.closure}` : '', c.restart ? `начата заново ${c.restart}` : ''].filter(Boolean).join(', ') || '—';
         const bySys = (b, k) => (b.by[k] ? `${b.by[k].fixed}/${b.by[k].seen}` : '—');
         body += sec('links', 'Стороны сети', st.baselines.length, `<p class="hint">Сторона — пара соседних станций. На ней сеть ищет целые числа длин волн у каждого спутника; когда они найдены («закреплено»), разность ионосферы и тропосферы между станциями известна до миллиметров.</p>
-          <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Сторона</th><th>км</th><th title="Готовность стороны"></th><th title="Закреплено из видимых: GPS">GPS</th><th title="Galileo">Galileo</th><th title="BeiDou">BeiDou</th><th title="Разность зенитной тропосферы между станциями сверх расчётной">Тропо, мм</th><th title="Общий наклон ионосферы между станциями, в зените">Ионо, мм</th><th title="Насколько сеть поправила вектор между станциями: восток, север, верх">Вектор, мм</th><th title="Что происходило со стороной с запуска">События</th><th title="Сколько секунд назад сторона считалась">Возраст</th></tr></thead><tbody>
+          <div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Сторона</th><th>км</th><th title="Готовность стороны"></th><th title="Закреплено из видимых: GPS">GPS</th><th title="Galileo">Galileo</th><th title="BeiDou">BeiDou</th><th title="Разность зенитной тропосферы между станциями сверх расчётной">Тропо, мм</th><th title="Общий наклон ионосферы между станциями, в зените">Ионо, мм</th><th title="Неровность ионосферы на стороне: остаток спутника сверх общего наклона, мм на км">Неровн.</th><th title="Насколько сеть поправила вектор между станциями: восток, север, верх">Вектор, мм</th><th title="Что происходило со стороной с запуска">События</th><th title="Сколько секунд назад сторона считалась">Возраст</th></tr></thead><tbody>
           ${st.baselines.map((b) => `<tr><td><span class="fig">${esc(b.a)}–${esc(b.b)}</span></td><td class="fig">${b.km}</td><td>${vrsLinkMark(b, o.maxAge)}</td><td class="fig">${bySys(b, 'G')}</td><td class="fig">${bySys(b, 'E')}</td><td class="fig">${bySys(b, 'C')}</td>
-            <td class="fig">${vrsNum(b.ztd)}</td><td class="fig">${vrsNum(b.grad[0])}</td><td class="fig">${b.shift.join(' · ')}</td><td>${ev(b.count)}</td><td class="fig">${vrsNum(b.ageSec, ' с')}</td></tr>`).join('')}</tbody></table></div>`);
+            <td class="fig">${vrsNum(b.ztd)}</td><td class="fig">${vrsNum(b.grad[0])}</td><td class="fig">${b.index === null || b.index === undefined ? '—' : String(b.index).replace('.', ',')}</td><td class="fig">${b.shift.join(' · ')}</td><td>${ev(b.count)}</td><td class="fig">${vrsNum(b.ageSec, ' с')}</td></tr>`).join('')}</tbody></table></div>`);
         body += sec('rovers', 'Роверы на виртуальных базах', st.sessions.length, st.sessions.length ? `<div class="adm-scroll"><table class="messages srv-table adm-rows adm-static"><thead><tr><th>Логин</th><th title="Станция, чьи наблюдения переносятся в точку ровера">Ведущая</th><th title="Станции, по которым считается поправка">Соседи</th><th>Спутн.</th><th title="1 — ровер внутри сети; меньше — за краем, поправки ограничены">Охват</th><th>Отдано эпох</th><th title="Сколько раз база переставлялась вслед за ровером">Переносов</th><th>С начала</th></tr></thead><tbody>
           ${st.sessions.map((x) => `<tr><td><span class="fig">${esc(x.login)}</span></td><td class="fig">${esc(x.master || '—')}</td><td class="fig">${x.info ? esc(x.info.aux.join(', ')) : '—'}</td><td class="fig">${x.info ? x.info.sats : '—'}</td>
             <td class="fig">${x.info ? x.info.reach.toFixed(2) : '—'}</td><td class="fig">${x.sent}${x.quietSec > 10 ? ` <span class="is-wait">молчит ${x.quietSec} с</span>` : ''}</td><td class="fig">${x.moves}</td><td>${when(new Date(x.startedAt).toISOString())}</td></tr>`).join('')}</tbody></table></div>`
           : '<p class="hint">Сейчас на точке никого нет.</p>');
       }
-      if (!vrs.draft) vrs.draft = JSON.parse(JSON.stringify(o));
+      // Настройка, появившаяся позже включения, берётся по умолчанию
+      if (!vrs.draft) vrs.draft = { ...Object.fromEntries(((vrs.data && vrs.data.options) || []).map((x) => [x.key, x.default])), ...JSON.parse(JSON.stringify(o)) };
       body += sec('options', 'Настройки', '', vrsOptionsHtml(n, st));
     }
     const top = vrsDialog.scrollTop;
@@ -2355,6 +2375,7 @@
     const res = await api('/api/admin/vrs');
     vrs.busy = false;
     if (res.ok) vrs.data = res.data;
+    drawVrsMap();
     if (!typing && vrsDialog.open) renderVrs();
   }
   function openVrs(id) {
@@ -2366,7 +2387,7 @@
     clearInterval(vrs.timer);
     vrs.timer = setInterval(loadVrs, 3000);
   }
-  vrsDialog.addEventListener('close', () => { clearInterval(vrs.timer); vrs.timer = null; });
+  vrsDialog.addEventListener('close', () => { clearInterval(vrs.timer); vrs.timer = null; drawVrsMap(); });
   vrsDialog.addEventListener('toggle', (event) => { const d = event.target.closest('[data-vfold]'); if (d) vrs.open[d.dataset.vfold] = d.open; }, true);
   vrsDialog.addEventListener('input', (event) => {
     const key = event.target.dataset.vin;
@@ -2428,13 +2449,90 @@
     renderRail();
   });
 
+  // ---------- Виртуальные базы на карте ----------
+  // Стороны сети VRS видны на карте всегда, пока у сети включены виртуальные базы: цвет — готовность
+  // стороны, по готовой бежит свет (поправки идут). Роверы на виртуальных базах — пунктирное
+  // кольцо в месте базы, луч к ведущей станции и тонкие лучи к соседним.
+
+  const vmap = { layer: null, key: '', timer: null, busy: false };
+  const VRS_TONE = { ready: '#5df2b0', warm: '#ffc56b', cold: '#ff5d7d', idle: '#8a86a8' };
+  function vrsLinkState(b, maxAge) {
+    if (b.ageSec === null || b.ageSec > Math.max(maxAge, 30) + 30) return 'idle';
+    const share = b.seen ? b.fixed / b.seen : 0;
+    return b.fixed >= 5 && share >= 0.75 ? 'ready' : (b.fixed >= 4 ? 'warm' : 'cold');
+  }
+  function drawVrsMap() {
+    if (!map) return;
+    const state = vrs.data && vrs.data.up ? vrs.data.state : null;
+    // Стороны видны только в своей сети: в основной сети чужих виртуальных баз нет. Открытое окно
+    // виртуальных баз показывает стороны своей сети, где бы оно ни было открыто.
+    const busy = view === 'subnets' && SHOW.vectors && !vrsDialog.open; // на карте векторы расчётного модуля
+    const shown = busy ? null : (scope || (vrsDialog.open ? vrs.id : null));
+    const nets = state && shown ? state.networks.filter((n) => n.id === shown && lists.networks.some((x) => x.id === n.id && x.recipe && x.recipe.vrs)) : [];
+    const key = JSON.stringify(nets.map((n) => [n.id, n.baselines.map((b) => [b.a, b.b, vrsLinkState(b, n.options.maxAge), b.fixed, b.seen]), n.sessions.map((x) => [x.id, x.master, x.base, x.info && x.info.aux]), n.stations.map((x) => (x.check ? x.check.now : null))]));
+    if (key === vmap.key) return;
+    vmap.key = key;
+    if (vmap.layer) { vmap.layer.remove(); vmap.layer = null; }
+    if (!nets.length) return;
+    const shapes = [];
+    for (const n of nets) {
+      const at = Object.fromEntries(n.stations.map((x) => [x.code, [x.lat, x.lon]]));
+      for (const b of n.baselines) {
+        const p = [at[b.a], at[b.b]];
+        if (!p[0] || !p[1]) continue;
+        const st = vrsLinkState(b, n.options.maxAge);
+        const share = b.seen ? b.fixed / b.seen : 0;
+        // Основа — тонкая линия со свечением; у готовой стороны поверх бежит свет
+        shapes.push(L.polyline(p, { className: `adm-vrs-line is-${st}`, color: VRS_TONE[st], weight: st === 'ready' ? 1.2 + 1.2 * share : 1.1, opacity: st === 'idle' ? 0.45 : 0.85, dashArray: st === 'idle' ? '2 7' : null, lineCap: 'round', interactive: false }));
+        if (st === 'ready' || st === 'warm') shapes.push(L.polyline(p, { className: `adm-vrs-flow is-${st}`, color: '#ffffff', weight: 1.6, opacity: 0.9, lineCap: 'round', interactive: false }));
+        const sys = ['G', 'E', 'C'].map((k) => (b.by[k] ? `${{ G: 'GPS', E: 'Galileo', C: 'BeiDou' }[k]} ${b.by[k].fixed}/${b.by[k].seen}` : '')).filter(Boolean).join(', ');
+        const word = { ready: 'готова', warm: 'набирает', cold: 'не готова', idle: 'не считается: станция молчит' }[st];
+        const info = `<b>${esc(b.a)} – ${esc(b.b)}</b> · ${b.km} км · ${word}<br>закреплено ${b.fixed} из ${b.seen}${sys ? `: ${sys}` : ''}<br>тропосфера ${vrsNum(b.ztd, ' мм')}, ионосфера ${vrsNum(b.grad[0], ' мм')}${b.ageSec === null ? '' : `<br>обновлена ${b.ageSec} с назад`}`;
+        const hit = L.polyline(p, { color: '#ffffff', weight: 16, opacity: 0.01, lineCap: 'round' });
+        hit.bindTooltip(`<div class="adm-vec">${info}</div>`, { sticky: true, opacity: 1 });
+        hit.on('click', () => openVrs(n.id));
+        shapes.push(hit);
+      }
+      // Самопроверка — мягкий ореол вокруг станции: зелёный, жёлтый, красный
+      for (const x of n.stations) {
+        const c = x.check ? x.check.now : null;
+        if (c === null) continue;
+        const tone = c <= 15 ? VRS_TONE.ready : (c <= 30 ? VRS_TONE.warm : VRS_TONE.cold);
+        shapes.push(L.circleMarker([x.lat, x.lon], { className: 'adm-vrs-halo', radius: 13, color: tone, weight: 1, opacity: 0.55, fillColor: tone, fillOpacity: 0.08, interactive: false }));
+      }
+      for (const x of n.sessions) {
+        if (!x.base) continue;
+        const base = [x.base.lat, x.base.lon];
+        if (x.master && at[x.master]) shapes.push(L.polyline([at[x.master], base], { className: 'adm-vrs-beam', color: '#84c8ff', weight: 1.6, opacity: 0.95, lineCap: 'round', interactive: false }));
+        for (const code of (x.info ? x.info.aux : [])) if (at[code]) shapes.push(L.polyline([at[code], base], { className: 'adm-vrs-aux', color: '#84c8ff', weight: 1, opacity: 0.55, dashArray: '1 6', lineCap: 'round', interactive: false }));
+        shapes.push(L.circleMarker(base, { className: 'adm-vrs-base', radius: 9, color: '#84c8ff', weight: 1.6, dashArray: '3 4', fillColor: '#84c8ff', fillOpacity: 0.12 })
+          .bindTooltip(`<div class="adm-vec"><b>Виртуальная база</b> · ${esc(x.login)}<br>ведущая ${esc(x.master || '—')}${x.info && x.info.aux.length ? `, соседи ${esc(x.info.aux.join(', '))}` : ''}<br>спутников ${x.info ? x.info.sats : '—'}${x.info && x.info.reach < 1 ? `, за краем сети (охват ${x.info.reach.toFixed(2)})` : ''}</div>`, { sticky: true, opacity: 1 }));
+      }
+    }
+    vmap.layer = L.layerGroup(shapes).addTo(map);
+  }
+  // Состояние VRS для карты спрашивается, пока хотя бы у одной сети включены виртуальные базы
+  async function pollVrsMap() {
+    if (vmap.busy || !map || document.hidden) return;
+    if (!scope && !vrsDialog.open) { drawVrsMap(); return; }
+    if (!lists.networks.some((n) => n.recipe && n.recipe.vrs)) { if (vmap.layer) { vrs.data = vrsDialog.open ? vrs.data : null; drawVrsMap(); } return; }
+    if (!vrsDialog.open) {
+      vmap.busy = true;
+      const res = await api('/api/admin/vrs');
+      vmap.busy = false;
+      if (res.ok) vrs.data = res.data;
+    }
+    drawVrsMap();
+  }
+  vmap.timer = setInterval(pollVrsMap, 4000);
+
   const liveCount = (n) => (live ? n.points.filter((p) => { const lp = live.points.find((x) => x.name === p.name); return lp && lp.live; }).length : 0);
   const shiftText = (look) => {
     const big = Object.entries(look.shifts || {}).filter(([, v]) => v > 0.02).sort((a, b) => b[1] - a[1]);
     return [`Станций: ${look.stations}.`, look.max_shift ? `Наибольший сдвиг координат: ${mm(look.max_shift)} мм (${look.max_station}).` : '',
       big.length ? `Сдвиг больше 2 см: ${big.slice(0, 8).map(([c, v]) => `${c} ${mm(v)} мм`).join(', ')}${big.length > 8 ? ' и другие' : ''}.` : '',
       look.added.length ? `Новые станции: ${look.added.join(', ')}.` : '', look.gone.length ? `Уйдут из сети: ${look.gone.join(', ')}.` : '',
-      look.params_changed ? 'Изменится состав потока: пересчёт, спутники, частота или ближайшая база.' : ''].filter(Boolean).join('\n');
+      look.source_changed ? 'Меняется источник координат сети.' : (look.params_changed ? 'Изменится состав потока: пересчёт, спутники, частота или ближайшая база.' : '')].filter(Boolean).join('\n');
   };
 
   // Что изменится при выпуске новой версии с прежним составом: для столбца «Ждёт выпуска»
@@ -2579,7 +2677,8 @@
       if (!was) return false;
       const r = net.draft.recipe;
       if (id === 'port') return String(net.draft.port || '') !== String(was.port);
-      if (id === 'source' || id === 'vrs') return false;
+      if (id === 'source') return r.source !== was.source || (r.source !== 'main' && net.draft.subnet_id !== n.subnet_id);
+      if (id === 'vrs') return false;
       if (id === 'transform' && usesIgd(r) && (r.igd || 'g2008') !== (was.igd || 'g2008')) return true;
       return JSON.stringify(r[id]) !== JSON.stringify(was[id]);
     };
@@ -2601,10 +2700,9 @@
     let note = '';
     if (id === 'source') {
       const ready = lists.subnets.filter((x) => Object.keys(x.accepted || {}).length);
-      body = n ? `<span class="adm-opt is-local" aria-current="true">${isMain() ? 'Основная сеть' : esc(n.subnet || 'расчётный модуль удалён')}</span>`
-        : `${tile('subnet', 'main', `Основная сеть<small>те же координаты, что раздаются сейчас</small>`, isMain(), '', 'local')}${ready.map((x) => tile('subnet', x.id, `${esc(x.name)}<small>расчётный модуль · принято ${Object.keys(x.accepted).length}${x.link && x.link.params ? ', привязка есть' : ', без привязки'}</small>`, !isMain() && x.id === d.subnet_id, '', 'itrf')).join('')}`;
-      note = n ? 'Источник у готовой сети не меняется: для другого источника выпустите новую сеть.'
-        : (isMain() ? 'Сеть из станций основной сети: координаты те же, что раздаются сейчас; расчёты не нужны. Дальше выберите станции, спутники, частоту и порт.'
+      body = `${tile('subnet', 'main', `Основная сеть<small>те же координаты, что раздаются сейчас</small>`, isMain(), '', 'local')}${ready.map((x) => tile('subnet', x.id, `${esc(x.name)}<small>расчётный модуль · принято ${Object.keys(x.accepted).length}${x.link && x.link.params ? ', привязка есть' : ', без привязки'}</small>`, !isMain() && x.id === d.subnet_id, '', 'itrf')).join('')}`;
+      note = (n && (isMain() ? recipeOf(n).source !== 'main' : (recipeOf(n).source === 'main' || d.subnet_id !== n.subnet_id)) ? 'Источник сменён: после выпуска все базы сети получат координаты из нового источника — роверы на её точках начнут поиск решения заново. Имена точек и порт останутся. ' : '')
+        + (isMain() ? 'Сеть из станций основной сети: координаты те же, что раздаются сейчас; расчёты не нужны. Дальше выберите станции, спутники, частоту и порт.'
           : 'Сеть из расчётного модуля: его принятые координаты, с выбором системы и пересчёта. Модуль остаётся чистым расчётом.');
     } else if (id === 'stations') {
       const codes = draftCodes();
@@ -2651,7 +2749,7 @@
     const key = JSON.stringify([d.subnet_id, d.recipe, n ? `${n.id}.${n.version}` : 'new', (draftSubnet() || {}).accepted_at, ((draftSubnet() || {}).link || {}).at]);
     if (net.lookKey === key) return;
     net.lookKey = key;
-    api('/api/admin/networks/preview', 'POST', n ? { network_id: n.id, recipe: d.recipe } : { subnet_id: d.subnet_id, recipe: d.recipe }).then((res) => {
+    api('/api/admin/networks/preview', 'POST', n ? { network_id: n.id, subnet_id: d.subnet_id, recipe: d.recipe } : { subnet_id: d.subnet_id, recipe: d.recipe }).then((res) => {
       if (net.lookKey !== key) return;
       net.look = res.ok ? res.data : { error: res.error || 'Не посчитано.' };
       if (net.open) lookLive();
@@ -2714,7 +2812,7 @@
         <label class="field"><span>Название</span><input id="net-title" type="text" autocomplete="off" maxlength="80" value="${esc(d.title)}"></label></div>` : ''}`;
     body += `${flowHtml(n)}<div id="net-options">${optionsHtml(n)}</div>`;
     if (admin) {
-      body += `<div class="adm-actions">${n ? `<button class="btn btn-primary btn-small" type="button" data-do="release-next" ${n.subnet_id || recipeOf(n).source === 'main' ? '' : 'disabled'}>Выпустить версию ${n.version + 1}</button>
+      body += `<div class="adm-actions">${n ? `<button class="btn btn-primary btn-small" type="button" data-do="release-next" ${d.subnet_id || isMain() ? '' : 'disabled'}>Выпустить версию ${n.version + 1}</button>
           ${back.length ? `<select class="adm-pick" id="net-back"><option value="">Вернуть версию…</option>${back.map((h) => `<option value="${h.version}">${h.version} — ${when(h.at)}</option>`).join('')}</select>` : ''}
           <button class="btn btn-quiet btn-small" type="button" data-do="net-reset">Сбросить правки</button><button class="btn btn-quiet btn-small" type="button" data-do="net-export">Таблица координат</button>
           <button class="btn btn-quiet btn-small btn-danger" type="button" data-do="release-del">Удалить сеть</button><button class="btn btn-quiet btn-small" type="button" data-do="net-new">Новая сеть</button>`
@@ -2799,9 +2897,10 @@
       if (res.ok) net.id = res.data.id;
     } else if (act === 'release-next' && n) {
       const portNew = String(d.port || '') !== String(n.port || '');
-      const look = await api('/api/admin/networks/preview', 'POST', { network_id: n.id, recipe: d.recipe });
+      const look = await api('/api/admin/networks/preview', 'POST', { network_id: n.id, subnet_id: d.subnet_id, recipe: d.recipe });
       if (!look.ok) { toast(look.error || 'Не получилось.', 7000); return; }
       const same = !look.data.max_shift && !look.data.added.length && !look.data.gone.length && !look.data.params_changed && JSON.stringify(d.recipe) === JSON.stringify(recipeOf(n));
+      if (look.data.source_changed && !window.confirm(`Сеть ${n.name}: источник меняется на «${isMain() ? 'основная сеть' : (draftSubnet() || {}).name}».\nВсе базы сети получат координаты из нового источника. Роверы на её точках начнут поиск решения заново, а их координаты изменятся на разницу между источниками.\nПродолжить?`)) return;
       if (same && !portNew) { toast('Изменений нет: координаты в расчётном модуле и состав сети те же, что в действующей версии.', 5000); return; }
       if (!window.confirm(`Сеть ${n.name}: ${same ? 'сменить порт' : `выпустить версию ${n.version + 1}`}?\n${same ? '' : `${shiftText(look.data)}\n`}${portNew ? `Порт раздачи станет ${d.port || '2101 (общий)'}: подключённые роверы отключатся.\n` : ''}Роверы на этой сети получат новое сразу.`)) return;
       if (portNew) {
@@ -2809,7 +2908,7 @@
         if (!moved.ok) { toast(moved.error || 'Порт не сменён.', 7000); return; }
         res = moved;
       }
-      if (!same) res = await api(`/api/admin/networks/${n.id}/release`, 'POST', { recipe: d.recipe });
+      if (!same) res = await api(`/api/admin/networks/${n.id}/release`, 'POST', { recipe: d.recipe, subnet_id: d.subnet_id });
     } else if (act === 'release-del' && n) {
       if (!window.confirm(`Удалить сеть ${n.name}? Её точки подключения (${n.points.length}) исчезнут, роверы на них отключатся. Расчётный модуль и его расчёты останутся.`)) return;
       res = await api(`/api/admin/networks/${n.id}`, 'DELETE');
