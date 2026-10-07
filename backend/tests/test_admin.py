@@ -636,7 +636,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((look["plan"]["kind"], look["plan"]["params"]["tx"], look["plan"]["transform"]["target"]), ("itrf_msk", -1.734, "msk66"))
         area = look["plan"]["transform"]["area"]
         self.assertTrue(55 < area["lat"] < 60 and area["dLon"] > 1, area)
-        self.assertEqual(look["plan"]["recipe"], {"source": "subnet", "coords": "itrf2014", "transform": "msk66", "stations": None, "systems": ["G", "R", "E", "C"], "rate": 1, "near": True})
+        self.assertEqual(look["plan"]["recipe"], {"source": "subnet", "coords": "itrf2014", "transform": "msk66", "stations": None, "systems": ["G", "R", "E", "C"], "rate": 1, "near": True, "igd": "g2008", "vrs": None})
         status, both, _ = a.call("POST", "/api/admin/networks", {"name": "auto3", "subnet_id": sub["id"], "kind": "itrf_msk"})
         self.assertEqual(status, 201, both)
         got = {p["name"]: p for p in a.call("GET", "/internal/directory", headers=key)[1]["mountpoints"]}
@@ -732,6 +732,9 @@ class AdminTest(unittest.TestCase):
         points = {p["name"]: p for p in d["mountpoints"]}
         self.assertEqual((points["B20_BLK1"]["filter"], points["B20_BLK1"]["transform"], points["BGSK_BLK1"]["filter"]), ({"systems": ["G", "R"], "rate": 2}, None, None))
         self.assertEqual(points["BFLOW_BLK2"]["transform"]["epoch"], 2026.76)
+        # Параметры ИГД: редакция стандарта проверяется; без пересчёта в МСК-66 или СК-42 она не нужна
+        self.assertIn("Параметры ИГД", look({"coords": "itrf2014", "igd": "g1999"})[1]["error"])
+        self.assertEqual(look({"coords": "itrf2020", "transform": "gsk2011", "igd": "g2001"})[1]["plan"]["recipe"]["igd"], "g2008")
         names = [x["name"] for x in d["auto"]]
         self.assertTrue("BGSK_NEAR" in names and "BFLOW_NEAR" in names and "B20_NEAR" not in names, names)
         # Смена блока — новая версия: станция добавлена, спутники все; без изменений версия не выпускается
@@ -763,6 +766,71 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("DELETE", base)[0], 200)
         for n in (n20, ngsk, nflow, nmain):
             self.assertEqual(a.call("DELETE", f"/api/admin/networks/{n['id']}")[0], 200)
+        for st in made:
+            self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
+
+    def test_09h_vrs(self):
+        """Виртуальные базы: включаются у сети сразу, без нового выпуска; служба VRS получает станции с координатами
+        для расчёта и для объявления роверу; у раздачи появляется точка ИМЯ_VRS."""
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        true = [[XYZ["x"] + dx, XYZ["y"] + dy, XYZ["z"] + dz] for dx, dy, dz in ((0, 0, 0), (40000, -20000, 5000), (-30000, 30000, -8000))]
+        made = []
+        for i, t in enumerate(true):
+            status, st, _ = a.call("POST", "/api/admin/stations", {"code": f"VR{i}", "source_mode": "listen", "source_port": 2180 + i})
+            self.assertEqual(status, 201, st)
+            made.append(st)
+        status, sub, _ = a.call("POST", "/api/admin/subnets", {"name": "vrs", "station_ids": [s["id"] for s in made]})
+        self.assertEqual(status, 201, sub)
+        base = f"/api/admin/subnets/{sub['id']}"
+        self.assertEqual(a.call("POST", base + "/ppp/start", {})[0], 200)
+        job = next(j for j in a.call("GET", "/internal/solver", headers=key)[1]["ppp"] if j["id"] == sub["id"])
+        res = {"epoch": 2026.76, "stations": {f"VR{i}": {"x": t[0], "y": t[1], "z": t[2], "x14": t[0], "y14": t[1], "z14": t[2], "sd": [0.002] * 3, "fixed": True, "hours": 6} for i, t in enumerate(true)}}
+        self.assertEqual(a.call("POST", "/internal/solver", {"kind": "ppp", "id": sub["id"], "startedAt": job["startedAt"], "results": res, "final": True}, key)[1], {"stored": True})
+        self.assertEqual(a.call("POST", base + "/ppp/accept", {})[0], 200)
+        status, n, _ = a.call("POST", "/api/admin/networks", {"name": "vnet", "subnet_id": sub["id"], "port": 2105, "recipe": {"coords": "itrf2020"}})
+        self.assertEqual((status, n["recipe"]["vrs"]), (201, None), n)
+        self.assertEqual(a.call("GET", "/internal/vrs", headers=key)[1], {"networks": []})
+        self.assertEqual(a.call("GET", "/internal/directory", headers=key)[1]["virtual"], [])
+        # Включение — по умолчанию; версия сети не меняется
+        url = f"/api/admin/networks/{n['id']}/vrs"
+        status, n, _ = a.call("POST", url, {"options": True})
+        self.assertEqual((status, n["version"], n["recipe"]["vrs"]["method"], n["recipe"]["vrs"]["aux"], n["release"]["vrs"]["antenna"]), (200, 1, "plane", 3, "ADVNULLANTENNA"), n)
+        tasks = a.call("GET", "/internal/vrs", headers=key)[1]["networks"]
+        self.assertEqual((len(tasks), tasks[0]["name"], [s["code"] for s in tasks[0]["stations"]], tasks[0]["options"]["maxKm"]), (1, "VNET_VRS", ["VR0", "VR1", "VR2"], 90))
+        # Расчёт идёт в принятых координатах (ITRF2014), роверу объявляются координаты сети (ITRF2020): разница — миллиметры
+        s0 = tasks[0]["stations"][0]
+        self.assertEqual([round(v, 4) for v in s0["ecef"]], [round(v, 4) for v in true[0]])
+        shift = sum((p - q) ** 2 for p, q in zip(s0["ecef"], s0["out"])) ** 0.5
+        self.assertTrue(0.002 < shift < 0.008, shift)
+        d = a.call("GET", "/internal/directory", headers=key)[1]
+        self.assertEqual(d["virtual"], [{"name": "VNET_VRS", "port": 2105, "transform": None}])
+        # Настройки: негодные объясняются словами, годные действуют сразу
+        for options, text in (({"aux": 9}, "от 1 до 6"), ({"method": "magic"}, "Способ"), ({"systems": []}, "хотя бы одну"), ({"aux": 1, "minAux": 2}, "Минимум соседей"),
+                              ({"antenna": "антенна"}, "латиница"), ({"mask": "низко"}, "нужно число")):
+            status, got, _ = a.call("POST", url, {"options": options})
+            self.assertEqual(status, 400, (options, got))
+            self.assertIn(text, got["error"])
+        status, n, _ = a.call("POST", url, {"options": {"method": "idw", "aux": 4, "systems": ["E", "G"], "mask": "12", "rate": 2, "gradPpm": "7,5", "strict": False}})
+        o = n["recipe"]["vrs"]
+        self.assertEqual((status, o["method"], o["aux"], o["systems"], o["mask"], o["rate"], o["gradPpm"], o["strict"], n["version"]), (200, "idw", 4, ["G", "E"], 12, 2, 7.5, False, 1))
+        # Станция, выключенная в сети, в расчёт виртуальных баз не идёт
+        point = next(p for p in n["points"] if p["station"] == "VR2")
+        self.assertEqual(a.call("PATCH", f"/api/admin/mountpoints/{point['id']}", {"enabled": False})[0], 200)
+        self.assertEqual([s["code"] for s in a.call("GET", "/internal/vrs", headers=key)[1]["networks"][0]["stations"]], ["VR0", "VR1"])
+        # Новый выпуск сети настройки виртуальных баз сохраняет
+        status, n, _ = a.call("POST", f"/api/admin/networks/{n['id']}/release", {"recipe": {**n["recipe"], "rate": 5}})
+        self.assertEqual((status, n["version"], n["release"]["vrs"]["method"], n["recipe"]["rate"]), (200, 2, "idw", 5), n)
+        # Состояние службы и список настроек для панели: служба в тесте не запущена
+        status, got, _ = a.call("GET", "/api/admin/vrs")
+        self.assertEqual((status, got["up"], got["options"][0]["key"]), (200, False, "systems"))
+        # Логин с подпиской на сеть получает право и на её виртуальную базу; выключение убирает точку
+        status, n, _ = a.call("POST", url, {"options": None})
+        self.assertEqual((status, n["recipe"]["vrs"], n["release"]["vrs"]), (200, None, None))
+        self.assertEqual(a.call("GET", "/internal/directory", headers=key)[1]["virtual"], [])
+        self.assertEqual(a.call("GET", "/internal/vrs", headers=key)[1], {"networks": []})
+        self.assertEqual(a.call("DELETE", f"/api/admin/networks/{n['id']}")[0], 200)
+        self.assertEqual(a.call("DELETE", base)[0], 200)
         for st in made:
             self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
 

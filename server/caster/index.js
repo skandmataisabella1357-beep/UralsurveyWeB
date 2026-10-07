@@ -162,6 +162,56 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     for (const [name, auto] of next) autos.set(name, auto);
   }
 
+  // ---------- Виртуальные базы (VRS) ----------
+  // Точка одна на сеть: ровер сообщает своё положение, а служба VRS собирает ему базу «рядом
+  // с ним» и отдаёт готовые кадры. Раздача здесь посредник: проверяет права, пересылает положение
+  // ровера и кадры для него. Служба VRS остановлена — такие точки отвечают «не работает»,
+  // обычные точки от неё не зависят.
+
+  const virtuals = new Map(); // имя точки -> { name, port, lobby }
+  const virtualSessions = new Map(); // номер сеанса -> сеанс
+  function setVirtuals(list) {
+    const next = new Map();
+    for (const v of list || []) {
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(v.name || '') || points.has(v.name) || autos.has(v.name) || next.has(v.name)) continue;
+      const old = virtuals.get(v.name);
+      const port = Number.isInteger(v.port) && v.port > 0 ? v.port : null;
+      const lobby = old && old.lobby.port === port ? old.lobby
+        : { name: v.name, lobby: true, feed: idleFeed(), stationId: null, position: null, positionFrame: null, transform: null, port, listed: true, enabled: true, access: null, sessions: new Set() };
+      lobby.transform = transformOf(v.transform);
+      if (old && old.lobby !== lobby) for (const session of [...sessions]) if (session.virtual === old) close(session, 'точка подключения переведена на другой порт');
+      const item = { name: v.name, port, lobby };
+      for (const session of sessions) if (session.virtual === old) session.virtual = item;
+      next.set(v.name, item);
+    }
+    for (const [name, old] of virtuals) if (!next.has(name)) for (const session of [...sessions]) if (session.virtual === old) close(session, 'точка подключения удалена');
+    virtuals.clear();
+    for (const [name, v] of next) virtuals.set(name, v);
+  }
+
+  const vrs = new BusClient({ host: config.bind, port: config.vrs.port, retryMs: 2000 });
+  // Положение ровера — службе VRS: по нему она ставит виртуальную базу
+  function vrsTell(session) {
+    const g = session.gga;
+    if (g) vrs.send({ t: 'rover', id: session.id, login: session.login, net: session.virtual.name, lat: g.lat, lon: g.lon, h: g.h });
+  }
+  vrs.on('message', (header, body) => {
+    const session = virtualSessions.get(header.id);
+    if (!session || session.closed) return;
+    if (header.t === 'data') {
+      if (!session.vrs || session.vrs.master !== header.master) {
+        session.fix.bases.push(header.master);
+        if (session.fix.bases.length > 20) session.fix.bases.shift();
+      }
+      session.vrs = { master: header.master, sats: header.sats, at: Date.now() };
+      send(session, body, session.version === 2 ? ntrip.chunk(body) : null);
+    } else if (header.t === 'end') {
+      close(session, String(header.reason || 'виртуальная база снята').slice(0, 200));
+    }
+  });
+  // Служба VRS поднялась заново — роверы сообщают ей своё положение ещё раз
+  vrs.on('up', () => { for (const session of virtualSessions.values()) vrsTell(session); });
+
   // Расстояние между двумя точками на поверхности, км
   function kmBetween(a, b) {
     const rad = Math.PI / 180;
@@ -246,15 +296,20 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   const where = (s) => (s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind } : null);
   setPoints(config.mountpoints || config.stations.map((st) => ({ name: st.code, station: st.code })), config.stations);
   setAutos(config.auto);
+  setVirtuals(config.virtual);
 
   function close(session, reason) {
     if (session.closed) return;
     session.closed = true;
     session.endReason = reason;
+    if (session.virtual) {
+      virtualSessions.delete(session.id);
+      vrs.send({ t: 'close', id: session.id });
+    }
     session.point.sessions.delete(session);
     sessions.delete(session);
     session.socket.destroy();
-    record({ t: 'close', id: session.id, login: session.login, bytes: session.bytes, reason, position: where(session), fix: fixSummary(session), station: session.point.feed.code, first: session.firstGga && { lat: session.firstGga.lat, lon: session.firstGga.lon } });
+    record({ t: 'close', id: session.id, login: session.login, bytes: session.bytes, reason, position: where(session), fix: fixSummary(session), station: session.vrs ? session.vrs.master : session.point.feed.code, first: session.firstGga && { lat: session.firstGga.lat, lon: session.firstGga.lon } });
   }
 
   function send(session, plain, chunked) {
@@ -379,6 +434,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   bus.on('down', () => log('раздача: связь со службой приёма потеряна, ждём её возвращения'));
   bus.on('fault', (text) => log(`раздача: сбой на шине — ${text}`));
   bus.start();
+  if (config.vrs && config.vrs.port) vrs.start();
 
   // Станция замолчала: сеансы её точек держатся stationLostMs и закрываются
   const watchdog = setInterval(() => {
@@ -394,6 +450,10 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         if (s.gga) retarget(s);
         if (s.point.lobby && now - s.startedAt > R.areaGgaMs) close(s, s.gga ? 'ни одна база сети не на связи' : 'ровер не сообщил своё положение: без него ближайшую базу не выбрать');
       } else if (now - s.point.feed.lastAt > R.stationLiveMs) retarget(s);
+    }
+    for (const s of [...virtualSessions.values()]) {
+      if (!s.gga) { if (now - s.startedAt > R.areaGgaMs) close(s, 'ровер не сообщил своё положение: без него виртуальную базу не построить'); continue; }
+      if (!vrs.connected && now - Math.max(s.vrs ? s.vrs.at : 0, s.startedAt) > R.areaGgaMs) close(s, 'служба виртуальных баз не работает');
     }
     // Логин с областью работы обязан сообщать положение: иначе ограничение обходится молчанием
     for (const s of [...sessions]) if (s.area && !s.gga && now - s.startedAt > R.areaGgaMs) close(s, 'ровер не сообщил своё положение, а для логина задана область работы');
@@ -462,6 +522,13 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         bitrate: Math.round(feed.rate * 8 / 100) * 100,
       });
     }
+    if (vrs.connected) {
+      for (const v of virtuals.values()) {
+        if (!onPort(v.lobby, port)) continue;
+        list.push({ name: v.name, city: 'Virtual base', needsGga: true, receiver: 'URALSURVEY VRS', lat: 0, lon: 0, bitrate: 6000,
+          messages: [{ type: 1006, period: 5 }, { type: 1008, period: 10 }, { type: 1033, period: 10 }, { type: 1074, period: 1 }, { type: 1094, period: 1 }, { type: 1124, period: 1 }] });
+      }
+    }
     return ntrip.sourcetable({ host: cfg.publicHost || publicBind, port, points: list });
   }
   // Точка видна на своём порту; без своего порта — на общем
@@ -476,7 +543,8 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       return;
     }
     const auto = points.has(req.path) ? null : autos.get(req.path);
-    const point = auto ? auto.lobby : points.get(req.path);
+    const virtual = points.has(req.path) || auto ? null : virtuals.get(req.path);
+    const point = auto ? auto.lobby : (virtual ? virtual.lobby : points.get(req.path));
     if (!point || !point.enabled || !onPort(point, port)) {
       refusals.push({ at: now, login: req.user || null, point: req.path, code: 404, reason: 'такой точки нет' });
       record({ t: 'refusal', login: req.user || '', point: req.path, code: 404, reason: 'такой точки нет', address: ip });
@@ -526,13 +594,17 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     const feed = point.feed;
     if (now - feed.lastAt > R.stationLiveMs) return refuse(socket, req, 503, 'станция не на связи', login);
     if (auto && !candidates(auto, now).length) return refuse(socket, req, 503, 'ни одна база сети не на связи', login);
+    if (virtual && !vrs.connected) return refuse(socket, req, 503, 'служба виртуальных баз не работает', login);
 
     const session = {
       id: `${bootId}-${++seq}`, socket, login, point, ip, version: req.version, agent: req.agent,
       startedAt: now, bytes: 0, gga: null, ggaAt: 0, firstGga: null, closed: false, endReason: null, text: '', area,
       // auto — сеанс точки «ближайшая база»; entry — имя точки, к которой ровер подключился
       auto, entry: point.name, fix: fixNew(),
+      // virtual — сеанс точки виртуальной базы; vrs — что служба VRS отдаёт сейчас
+      virtual, vrs: null,
     };
+    if (virtual) virtualSessions.set(session.id, session);
     socket.setNoDelay(true); // кадр уходит сразу, без склейки пакетов
     socket.setKeepAlive(true, 30000);
     socket.setTimeout(0);
@@ -556,6 +628,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       session.ggaAt = Date.now();
       if (!session.firstGga) session.firstGga = g;
       if (session.auto) retarget(session);
+      if (session.virtual) vrsTell(session);
       fixTake(session, g, session.ggaAt);
       // Ровер вышел из своей области работы — сеанс закрывается
       if (session.area && !inside(g.lat, g.lon, session.area)) close(session, 'ровер вне разрешённой области работы');
@@ -598,6 +671,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       if (dir.rules && Number.isFinite(dir.rules.stationLostMs)) R.stationLostMs = dir.rules.stationLostMs;
       setPoints(dir.mountpoints, dir.stations);
       setAutos(dir.auto);
+      setVirtuals(dir.virtual);
       if (portsReady) syncPorts();
       log(`раздача: справочник из базы — точек ${dir.mountpoints.length}, логинов ${Object.keys(dir.users).length}`);
     } catch (err) {
@@ -681,7 +755,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
   const extra = new Map(); // порт -> слушатель
   function syncPorts() {
     if (!cfg.enabled) return;
-    const wanted = new Set([...points.values(), ...autos.values()].map((p) => p.port).filter((p) => p && p !== actualPort));
+    const wanted = new Set([...points.values(), ...autos.values(), ...virtuals.values()].map((p) => p.port).filter((p) => p && p !== actualPort));
     for (const [port, srv] of extra) {
       if (wanted.has(port)) continue;
       extra.delete(port);
@@ -723,10 +797,13 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
         })),
         clients: [...sessions].map((s) => ({
           id: s.id, login: s.login, point: s.point.name, entry: s.entry, version: s.version, agent: s.agent, address: s.ip, fix: fixSummary(s),
+          vrs: s.virtual ? (s.vrs || { master: null, sats: 0, at: null }) : null,
           startedAt: s.startedAt, bytes: s.bytes, queued: s.socket.writableLength,
           position: s.gga ? { lat: s.gga.lat, lon: s.gga.lon, kind: s.gga.kind, sats: s.gga.sats, age: s.gga.age, at: s.ggaAt } : null,
         })),
         autos: [...autos.values()].map((a) => ({ name: a.name, port: a.port || actualPort, bases: candidates(a, now).length, of: a.points.length, waiting: a.lobby.sessions.size })),
+        virtuals: [...virtuals.values()].map((v) => ({ name: v.name, port: v.port || actualPort, sessions: v.lobby.sessions.size })),
+        vrsLink: vrs.connected,
         refusals: refusals.slice(-50),
         directory: directory ? { url: directoryUrl, lastOkAgeMs: directory.lastOkAt ? now - directory.lastOkAt : null, pending: journal.length } : null,
       };
@@ -760,6 +837,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       clearInterval(flushTimer);
       if (directory) directory.stop();
       bus.stop();
+      vrs.stop();
       for (const s of [...sessions]) close(s, 'служба раздачи остановлена');
       for (const socket of sockets) socket.destroy();
       await Promise.all([state.close(), server ? new Promise((resolve) => server.close(resolve)) : null]);

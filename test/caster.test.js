@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('net');
-const { BusServer } = require('../server/shared/bus');
+const { BusServer, Decoder, encode } = require('../server/shared/bus');
 const { merge, DEFAULTS } = require('../server/shared/config');
 const { getJson } = require('../server/shared/http');
 const caster = require('../server/caster');
@@ -74,7 +74,7 @@ function rover(port, { path = '/TOUR', user, password, version = 1, raw, gga, re
 }
 
 // Стенд: шина вместо приёма, служба раздачи с тестовыми логинами
-async function bench({ rules, casterConfig = {}, mountpoints, users, bind, auto } = {}) {
+async function bench({ rules, casterConfig = {}, mountpoints, users, bind, auto, virtual, vrsPort = 0 } = {}) {
   const bus = new BusServer({ port: 0 });
   const busPort = await bus.ready;
   const config = merge(DEFAULTS, {
@@ -82,6 +82,8 @@ async function bench({ rules, casterConfig = {}, mountpoints, users, bind, auto 
     ingest: { busPort },
     caster: { statePort: 0, port: 0, enabled: true, ...casterConfig },
     ...(auto ? { auto } : {}),
+    ...(virtual ? { virtual } : {}),
+    vrs: { port: vrsPort },
     stations: [{ code: 'TOUR', name: 'Turinsk', source: { mode: 'listen', port: 1 } }, { code: 'DEAD', name: 'Silent', source: { mode: 'listen', port: 2 } }],
     mountpoints: mountpoints || [
       { name: 'TOUR', station: 'TOUR' },
@@ -657,5 +659,71 @@ test('состав потока сети: только выбранные сис
     thin.end();
   } finally {
     await b.stop();
+  }
+});
+
+test('виртуальная база: раздача передаёт положение ровера службе VRS и отдаёт её кадры', async () => {
+  const gga = (lat, lon) => {
+    const part = (v, w) => `${String(Math.floor(v)).padStart(w, '0')}${((v - Math.floor(v)) * 60).toFixed(4).padStart(7, '0')}`;
+    const body = `GPGGA,120000.00,${part(lat, 2)},N,${part(lon, 3)},E,1,12,0.8,250.0,M,-8.0,M,,0000`;
+    let sum = 0;
+    for (let i = 0; i < body.length; i++) sum ^= body.charCodeAt(i);
+    return `$${body}*${sum.toString(16).toUpperCase().padStart(2, '0')}`;
+  };
+  // Служба VRS здесь своя: запоминает, что ей сказали, и шлёт кадры по команде теста
+  const told = [];
+  let link = null;
+  const service = net.createServer((socket) => {
+    link = socket;
+    const decoder = new Decoder();
+    socket.on('data', (chunk) => { for (const m of decoder.push(chunk)) told.push(m.header); });
+    socket.on('error', () => {});
+  });
+  await new Promise((resolve) => service.listen(0, '127.0.0.1', resolve));
+  const frames = Buffer.concat([rtcm.encodePosition({ stationId: 0, ecef: [1719977.663, 3048216.851, 5314477.642], antennaHeight: 0 }), obs(2000)]);
+  const b = await bench({ rules: { areaGgaMs: 500 }, vrsPort: service.address().port, virtual: [{ name: 'N3_VRS', port: null, transform: null }, { name: 'TOUR', port: null }],
+    mountpoints: [{ name: 'TOUR', station: 'TOUR' }], users: { ivan: { password: 'pass-ivan', maxSessions: 5 }, narrow: { password: 'p6', mountpoints: ['TOUR'] } } });
+  try {
+    await until(async () => (await b.state()).vrsLink);
+    // Имя, занятое обычной точкой, виртуальной не становится
+    assert.deepEqual((await b.state()).virtuals.map((v) => v.name), ['N3_VRS']);
+    const table = rover(b.port, { path: '/' });
+    await until(() => table.closed);
+    assert.match(table.text(), /STR;N3_VRS;Virtual base;[^\r\n]*;1;0;/, 'в таблице источников точка требует положения ровера');
+    // Права — как у любой точки
+    const stranger = rover(b.port, { path: '/N3_VRS', user: 'narrow', password: 'p6' });
+    await until(() => stranger.closed);
+    assert.match(stranger.status(), /401|403/);
+    const c = rover(b.port, { path: '/N3_VRS', user: 'ivan', password: 'pass-ivan', version: 2, gga: gga(56.84, 60.6) });
+    const said = await until(() => told.find((m) => m.t === 'rover'));
+    assert.deepEqual([said.net, said.login, Math.round(said.lat * 100), Math.round(said.lon * 10), Math.round(said.h)], ['N3_VRS', 'ivan', 5684, 606, 242]);
+    link.write(encode({ t: 'data', id: said.id, master: 'EKB2', sats: 14 }, frames));
+    await until(() => types(c.body()).includes(1074));
+    assert.deepEqual(types(c.body()), [1006, 1074]);
+    const s = (await b.state()).clients[0];
+    assert.deepEqual([s.entry, s.vrs.master, s.vrs.sats], ['N3_VRS', 'EKB2', 14]);
+    // Ровер переехал — служба узнаёт новое положение
+    c.socket.write(`${gga(56.9, 61.0)}\r\n`);
+    await until(() => told.filter((m) => m.t === 'rover').length === 2);
+    // Служба сняла базу — сеанс закрывается с её объяснением
+    link.write(encode({ t: 'end', id: said.id, reason: 'сеть перестала давать поправки для этого места' }));
+    await until(() => c.closed);
+    await until(() => told.some((m) => m.t === 'close' && m.id === said.id));
+    // Без положения виртуальную базу не построить: сеанс не висит вечно
+    const silent = rover(b.port, { path: '/N3_VRS', user: 'ivan', password: 'pass-ivan' });
+    await until(() => silent.closed, 4000);
+    // Служба VRS остановлена — точка отвечает отказом, обычная точка работает
+    link.destroy();
+    await new Promise((resolve) => service.close(resolve));
+    await until(async () => !(await b.state()).vrsLink);
+    const late = rover(b.port, { path: '/N3_VRS', user: 'ivan', password: 'pass-ivan', gga: gga(56.84, 60.6) });
+    await until(() => late.closed);
+    assert.match(late.status(), /503/);
+    const plain = rover(b.port, { path: '/TOUR', user: 'ivan', password: 'pass-ivan' });
+    await until(() => /200|ICY/.test(plain.status()));
+    plain.end();
+  } finally {
+    await b.stop();
+    if (service.listening) await new Promise((resolve) => service.close(resolve));
   }
 });

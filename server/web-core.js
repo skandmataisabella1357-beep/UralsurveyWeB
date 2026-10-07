@@ -56,6 +56,7 @@ const env = {
   URAL_INGEST: 'http://127.0.0.1:7102',
   URAL_CASTER: 'http://127.0.0.1:7103',
   URAL_SOLVER: 'http://127.0.0.1:7104',
+  URAL_VRS: 'http://127.0.0.1:7105',
   PYTHONUNBUFFERED: '1',
 };
 
@@ -89,6 +90,7 @@ setTimeout(() => {
   launch('приём', () => fork(path.join(__dirname, 'ingest', 'index.js'), { env, stdio: 'inherit' }));
   launch('раздача', () => fork(path.join(__dirname, 'caster', 'index.js'), { env, stdio: 'inherit' }));
   launch('расчёт', () => fork(path.join(__dirname, 'solver', 'index.js'), { env, stdio: 'inherit' }));
+  launch('виртуальные базы', () => fork(path.join(__dirname, 'vrs', 'index.js'), { env, stdio: 'inherit' }));
 }, 2500);
 
 // ---------- Тестовая сеть ----------
@@ -148,4 +150,16 @@ process.on('SIGHUP', () => {
     child.planned = true;
     child.kill();
   }
+});
+
+// Обновление службы виртуальных баз: по сигналу USR2 перезапускается только она. Сеть заново
+// находит целые за 2–3 минуты; роверы на точках VRS это время поправок не получают, остальные
+// точки не затрагиваются.
+process.on('SIGUSR2', () => {
+  if (stopping) return;
+  const child = children.get('виртуальные базы');
+  if (!child) return;
+  console.log('Обновление службы виртуальных баз: перезапускается только она');
+  child.planned = true;
+  child.kill();
 });

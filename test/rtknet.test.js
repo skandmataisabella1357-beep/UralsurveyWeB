@@ -269,6 +269,23 @@ test('пересчёт в потоке: семь параметров 1021 по�
       assert.ok(Math.hypot(...got.map((v, i) => v - want[i])) < 0.001, 'расхождение с цепочкой больше миллиметра');
     }
   }
+  // Параметры ИГД — по выбранной редакции стандарта; по умолчанию 2008 года, под неё подогнан каталог
+  const shift = { tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 };
+  assert.equal(T.plan({ target: 'msk66', link: shift }).igd, 'g2008');
+  assert.deepEqual(T.plan({ target: 'msk66', link: shift, igd: 'g2008' }).helmert, T.plan({ target: 'msk66', link: shift }).helmert);
+  for (const [igd, d] of Object.entries(C.IGD)) {
+    const p = T.plan({ target: 'sk42', link: shift, igd });
+    assert.ok(p.datum.includes(d.title));
+    for (const X of points) {
+      const want = C.fromWgs84(T.apply({ dx: shift.tx, dy: shift.ty, dz: shift.tz, rx: 0, ry: 0, rz: 0, scale: 0 }, X), d);
+      assert.ok(Math.hypot(...T.apply(p.helmert, X).map((v, i) => v - want[i])) < 0.001, igd);
+    }
+  }
+  // Редакции расходятся на дециметры: выбор не для красоты
+  const h01 = T.plan({ target: 'msk66', link: shift, igd: 'g2001' }).helmert;
+  const h17 = T.plan({ target: 'msk66', link: shift, igd: 'g2017' }).helmert;
+  const gap = Math.hypot(...T.apply(h01, points[0]).map((v, i) => v - T.apply(h17, points[0])[i]));
+  assert.ok(gap > 0.1 && gap < 3, `между 2001 и 2017 ${gap} м`);
   // Проекция — на каждую зону своя; зона выбирается по долготе
   const plan = T.plan({ target: 'msk66', link: { tx: 1.7143, ty: -3.7758, tz: 1.4522, rx: 0, ry: 0, rz: 0, m: 0 } });
   assert.deepEqual(plan.projections.map((z) => [z.zone, z.lon0, z.falseEasting]), [[1, 60.05, 1500000], [2, 66.05, 2500000], [3, 72.05, 3500000]]);

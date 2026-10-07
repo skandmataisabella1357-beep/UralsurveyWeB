@@ -66,6 +66,7 @@ class App:
 
     def __init__(self, store: Store, ingest_url: str = "", caster_url: str = "", internal_key: str = ""):
         self.solver_url = os.environ.get("URAL_SOLVER", "")
+        self.vrs_url = os.environ.get("URAL_VRS", "")
         self.store = store
         self.ingest_url = ingest_url
         self.caster_url = caster_url
@@ -117,6 +118,8 @@ class App:
             r("PATCH", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_update(q.who, q.id, q.body)), "admin"),
             r("DELETE", r"/api/admin/networks/(\d+)", lambda q: (200, store.network_delete(q.who, q.id) or {}), "admin"),
             r("POST", r"/api/admin/networks/(\d+)/release", lambda q: (200, store.network_release(q.who, q.id, q.body.get("recipe"))), "admin"),
+            r("POST", r"/api/admin/networks/(\d+)/vrs", lambda q: (200, store.network_vrs(q.who, q.id, q.body.get("options"))), "admin"),
+            r("GET", r"/api/admin/vrs", lambda q: (200, self.vrs_state()), "operator"),
             r("POST", r"/api/admin/networks/(\d+)/rollback", lambda q: (200, store.network_rollback(q.who, q.id, int(q.body.get("version") or 0))), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/ppp/daily", lambda q: (200, store.subnet_ppp_daily(q.who, q.id, bool(q.body.get("on")))), "admin"),
             r("POST", r"/api/admin/subnets/(\d+)/ppp/clear", lambda q: (200, store.subnet_ppp_clear(q.who, q.id)), "admin"),
@@ -179,6 +182,12 @@ class App:
                 return json.loads(res.read().decode("utf-8"))
         except (urllib.error.URLError, OSError, ValueError):
             return None
+
+    def vrs_state(self):
+        """Состояние службы виртуальных баз и список её настроек — панель строит по нему окно."""
+        from .store import VRS_OPTIONS
+        state = self._fetch(f"{self.vrs_url}/state", timeout=3) if self.vrs_url else None
+        return {"up": bool(state), "state": state, "options": VRS_OPTIONS}
 
     def collect(self):
         ingest = self._fetch(f"{self.ingest_url}/state")
@@ -395,6 +404,8 @@ def make_handler(app: App):
                 return self.send_json(200, {"recorded": done})
             if path == "/internal/outages" and self.command == "POST":
                 return self.send_json(200, {"recorded": store.record_outages(self.body())})
+            if path == "/internal/vrs" and self.command == "GET":
+                return self.send_json(200, {"networks": store.vrs_tasks()})
             if path == "/internal/solver" and self.command == "GET":
                 return self.send_json(200, {"subnets": store.solver_tasks(), "ppp": store.solver_ppp_tasks(), "pppDaily": store.solver_ppp_daily()})
             if path == "/internal/solver" and self.command == "POST":

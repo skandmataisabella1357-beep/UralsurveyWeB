@@ -340,11 +340,11 @@ body.adm.map-holo .map-wrap::after { content: ''; position: absolute; inset: 0; 
 .adm-reach-mine { filter: drop-shadow(0 0 4px currentColor); }
 
 /* Окно шага подсети — всплывающая панель над картой, без затемнения: карта видна и доступна */
-:is(#sub-dialog, #net-dialog).adm-panel { position: fixed; z-index: 25; margin: 0; inset: auto 12px 12px auto; left: 324px; width: auto; max-width: 620px; max-height: min(62vh, calc(100vh - 90px)); overflow-y: auto; padding: 14px 16px 12px; border-radius: 18px; box-shadow: var(--shadow); }
-:is(#sub-dialog, #net-dialog).adm-panel.adm-wide { max-width: none; right: 12px; max-height: min(48vh, calc(100vh - 90px)); }
-:is(#sub-dialog, #net-dialog).adm-panel > h2 { font-size: 15px; margin-bottom: 10px; gap: 12px; }
-:is(#sub-dialog, #net-dialog).adm-panel #sub-jumps { margin: 0; }
-:is(#sub-dialog, #net-dialog).adm-panel #sub-jumps .adm-chip { font-weight: 400; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel { position: fixed; z-index: 25; margin: 0; inset: auto 12px 12px auto; left: 324px; width: auto; max-width: 620px; max-height: min(62vh, calc(100vh - 90px)); overflow-y: auto; padding: 14px 16px 12px; border-radius: 18px; box-shadow: var(--shadow); }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel.adm-wide { max-width: none; right: 12px; max-height: min(48vh, calc(100vh - 90px)); }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel > h2 { font-size: 15px; margin-bottom: 10px; gap: 12px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel #sub-jumps { margin: 0; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel #sub-jumps .adm-chip { font-weight: 400; }
 .adm-tip .adm-chips { margin: 8px 0 2px; }
 .adm-tip .adm-step { justify-content: flex-start; }
 .adm-tip .adm-step svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -360,23 +360,23 @@ body.adm.map-holo .map-wrap::after { content: ''; position: absolute; inset: 0; 
 #area-dialog .adm-sub-stations { max-height: 46vh; overflow-y: auto; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 
 /* Панель шага подсети — наверху, под верхней полосой, компактная: карта под ней остаётся свободной */
-:is(#sub-dialog, #net-dialog).adm-panel, :is(#sub-dialog, #net-dialog).adm-panel.adm-wide { inset: 64px 12px auto 324px; max-height: min(38vh, 360px); padding: 9px 14px 8px; border-radius: 16px; }
-:is(#sub-dialog, #net-dialog).adm-panel:not(.adm-wide) { right: auto; width: min(560px, calc(100vw - 340px)); max-height: min(60vh, 520px); }
-:is(#sub-dialog, #net-dialog).adm-panel > h2 { font-size: 13px; margin-bottom: 6px; padding-right: 30px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-close { top: 6px; right: 8px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-chip { height: 22px; padding: 0 8px; font-size: 10.5px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-sub-form { gap: 8px; margin-bottom: 6px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-sub-form .field > span { font-size: 10.5px; margin-bottom: 2px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-sub-form .field input, :is(#sub-dialog, #net-dialog).adm-panel .adm-sub-form .field select { height: 25px; font-size: 11.5px; border-radius: 8px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-actions { margin: 2px 0 5px; gap: 5px; }
-:is(#sub-dialog, #net-dialog).adm-panel .btn-small { height: 22px; font-size: 10.5px; padding: 0 8px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel, :is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel.adm-wide { inset: 64px 12px auto 324px; max-height: min(38vh, 360px); padding: 9px 14px 8px; border-radius: 16px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel:not(.adm-wide) { right: auto; width: min(560px, calc(100vw - 340px)); max-height: min(60vh, 520px); }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel > h2 { font-size: 13px; margin-bottom: 6px; padding-right: 30px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-close { top: 6px; right: 8px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-chip { height: 22px; padding: 0 8px; font-size: 10.5px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-sub-form { gap: 8px; margin-bottom: 6px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-sub-form .field > span { font-size: 10.5px; margin-bottom: 2px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-sub-form .field input, :is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-sub-form .field select { height: 25px; font-size: 11.5px; border-radius: 8px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-actions { margin: 2px 0 5px; gap: 5px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .btn-small { height: 22px; font-size: 10.5px; padding: 0 8px; }
 /* Пояснения — в одну строку; целиком показываются при наведении. Состояние расчёта видно всегда */
-:is(#sub-dialog, #net-dialog).adm-panel .hint { font-size: 10.5px; line-height: 1.35; margin: 3px 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; color: var(--faint); }
-:is(#sub-dialog, #net-dialog).adm-panel .hint:hover, :is(#sub-dialog, #net-dialog).adm-panel #sub-status { -webkit-line-clamp: unset; color: var(--muted); }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-rows th { font-size: 9.5px; padding-bottom: 3px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-rows td { font-size: 10.5px; padding-top: 2px; padding-bottom: 2px; }
-:is(#sub-dialog, #net-dialog).adm-panel .adm-sub-stations { margin: 4px 0 6px; }
-:is(#sub-dialog, #net-dialog).adm-panel .dialog-actions { margin-top: 2px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .hint { font-size: 10.5px; line-height: 1.35; margin: 3px 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; color: var(--faint); }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .hint:hover, :is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel #sub-status { -webkit-line-clamp: unset; color: var(--muted); }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-rows th { font-size: 9.5px; padding-bottom: 3px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-rows td { font-size: 10.5px; padding-top: 2px; padding-bottom: 2px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .adm-sub-stations { margin: 4px 0 6px; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog).adm-panel .dialog-actions { margin-top: 2px; }
 
 /* Семь параметров привязки подсети: одной строкой плиток */
 .adm-params { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
@@ -449,7 +449,7 @@ body.adm.map-holo .map-wrap::after { content: ''; position: absolute; inset: 0; 
 .adm-todo span { display: inline-flex; align-items: center; gap: 6px; }
 .adm-todo i { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--holo-soft); box-shadow: inset 0 0 0 1px #a890ff; color: var(--text); font-style: normal; font-size: 10px; }
 .adm-hint.glass { position: fixed; z-index: 70; width: auto; max-width: 300px; padding: 8px 11px; pointer-events: none; color: var(--text); }
-:is(#sub-dialog, #net-dialog) th { cursor: help; }
+:is(#sub-dialog, #net-dialog, #vrs-dialog) th { cursor: help; }
 .adm-vec { font-size: 12px; line-height: 1.5; }
 /* Окна карты (данные вектора): в тон панели */
 body.adm .leaflet-popup-content-wrapper, body.adm .leaflet-tooltip { border: 1px solid var(--line); border-radius: 12px; background: var(--glass); color: var(--text); box-shadow: var(--shadow, 0 10px 30px rgba(0, 0, 0, 0.35)); backdrop-filter: blur(14px); }
@@ -597,3 +597,36 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 #net-dialog.adm-panel.adm-wide { max-height: min(74vh, 680px); }
 .adm-sub-form.is-release { grid-template-columns: 150px minmax(0, 1fr); }
 @media (max-width: 900px) { .adm-block { width: 86px; } .adm-flow-link { width: 10px; } }
+
+/* Переключатель сетей в каталоге: основная и сети раздачи */
+.adm-scope { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 6px 8px; }
+.adm-scope .adm-chip { --tone: #b8a4ff; height: 23px; padding: 0 9px; font-size: 11px; }
+.adm-scope .adm-chip.is-itrf { --tone: #7fe0b4; }
+.adm-scope .adm-chip.is-itrf_msk { --tone: #84c8ff; }
+.adm-scope .adm-chip.is-gsk { --tone: #ffc48e; }
+.adm-scope .adm-chip[aria-current='true'] { color: var(--tone); background: color-mix(in srgb, var(--tone) 16%, transparent); box-shadow: inset 0 0 0 1px var(--tone); border-color: transparent; }
+
+/* Окно виртуальных баз (VRS) */
+#vrs-dialog.adm-panel.adm-wide { max-height: min(72vh, 680px); z-index: 26; }
+#vrs-dialog > h2 { display: flex; flex-wrap: wrap; align-items: center; }
+#vrs-dialog .adm-kind { font-weight: 400; cursor: help; }
+.adm-kind.is-bad { --tone: #ff8fa3; }
+:root[data-theme='light'] .adm-kind.is-bad { --tone: #c22a4a; }
+.adm-fold { margin: 4px 0; border-top: 1px solid var(--line); }
+.adm-fold > summary { padding: 5px 0 3px; font-size: 11.5px; font-weight: 500; color: var(--text); cursor: pointer; list-style: none; }
+.adm-fold > summary::-webkit-details-marker { display: none; }
+.adm-fold > summary::before { content: '+'; display: inline-block; width: 12px; color: var(--faint); font-family: var(--figures); }
+.adm-fold[open] > summary::before { content: '−'; }
+.adm-spark { width: 60px; height: 14px; vertical-align: middle; }
+.adm-spark polyline { fill: none; stroke: #84c8ff; stroke-width: 1.2; stroke-linejoin: round; }
+.adm-vrs-group { margin: 8px 0 3px; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.adm-vrs-opt { display: grid; grid-template-columns: 210px minmax(180px, auto) 1fr; align-items: center; gap: 4px 12px; padding: 2px 0; }
+.adm-vrs-opt.is-changed .adm-vrs-name { color: #84c8ff; }
+.adm-vrs-name { font-size: 11.5px; color: var(--text); }
+.adm-vrs-name sup { margin-left: 3px; color: var(--faint); cursor: help; }
+.adm-vrs-ctl { display: flex; flex-wrap: wrap; gap: 4px; }
+.adm-vrs-opt .adm-port input { width: 58px; }
+@media (max-width: 900px) { .adm-vrs-opt { grid-template-columns: 1fr; } }
+
+/* Разрыв между двумя рядами плиток одного блока */
+.adm-opt-gap { flex-basis: 100%; height: 0; }

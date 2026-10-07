@@ -12,6 +12,7 @@ import ipaddress
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -977,7 +978,18 @@ class Store:
         for tn in tariff_nets:
             if tn["network_id"] in net_auto:
                 by_tariff.setdefault(tn["tariff_id"], []).append(net_auto[tn["network_id"]])
-        all_points += [a["name"] for a in auto]
+        # Точка виртуальной базы — одна на сеть с включённым блоком «VRS»
+        virtual: list[dict] = []
+        for n in net_rows:
+            release = n["release"] or {}
+            name = f"{n['name']}_{VRS}"
+            if not release.get("vrs") or name in taken:
+                continue
+            virtual.append({"name": name, "port": n["port"], "transform": release.get("transform")})
+            for tn in tariff_nets:
+                if tn["network_id"] == n["id"]:
+                    by_tariff.setdefault(tn["tariff_id"], []).append(name)
+        all_points += [a["name"] for a in auto] + [v["name"] for v in virtual]
         staff_logins = [row["login"] for row in logins if row["staff"] and row["active"]]
 
         # Права клиента — объединение всех его действующих подписок
@@ -1054,6 +1066,7 @@ class Store:
                              "position": own_position(p), "transform": transform(p), "filter": shaping(p), "port": net_ports.get(p["network_id"])} for p in points if p["network_id"] is None or p["station_code"] in released.get(p["network_id"], {})],
             "users": users,
             "auto": auto,
+            "virtual": virtual,
             "rules": {"stationLostMs": lost * 1000},
         }
 
@@ -1417,6 +1430,9 @@ class Store:
         transform = "none" if source == "main" else str(data.get("transform") or "none")
         if transform not in NET_TRANSFORMS:
             raise Problem("Пересчёт в потоке: не передавать, МСК-66, СК-42 или ГСК-2011.")
+        igd = str(data.get("igd") or "g2008")
+        if igd not in NET_IGD:
+            raise Problem("Параметры ИГД: ГОСТ Р 51794-2001, ГОСТ Р 51794-2008 или ГОСТ 32453-2017.")
         if coords in ("net1", "gsk2011") and transform != "none":
             raise Problem("Пересчёт в потоке возможен только при координатах базы в ITRF: координаты «как основная сеть» и ГСК-2011 уже пересчитаны, второй раз сдвигать нельзя.")
         stations = data.get("stations")
@@ -1436,7 +1452,7 @@ class Store:
         if rate not in NET_RATES:
             raise Problem("Частота поправок: раз в 1, 2, 5 или 10 секунд.")
         return {"source": source, "coords": coords, "transform": transform, "stations": stations, "systems": [c for c in NET_SYSTEMS if c in systems], "rate": rate,
-                "near": bool(data.get("near", True))}
+                "near": bool(data.get("near", True)), "igd": igd if transform in ("msk66", "sk42") else "g2008", "vrs": vrs_options(data.get("vrs")) if data.get("vrs") else None}
 
     @staticmethod
     def _recipe_kind(recipe: dict) -> str:
@@ -1453,7 +1469,7 @@ class Store:
             if not stations:
                 raise Problem("Станций для этой сети нет: проверьте блок «Станции».")
             return {"kind": "local", "recipe": recipe, "subnet": None, "stations": stations, "epoch": None,
-                    "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"]}
+                    "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"], "vrs": recipe.get("vrs")}
         if subnet is None:
             raise Problem("Укажите расчётный модуль, из которого выпускается сеть, либо выберите источником основную сеть.")
         accepted = subnet["accepted"] or {}
@@ -1487,7 +1503,7 @@ class Store:
         if not stations:
             raise Problem("Станций с принятыми координатами для этой сети нет: проверьте блок «Станции».")
         out = {"kind": self._recipe_kind(recipe), "recipe": recipe, "subnet": subnet["name"], "stations": stations, "epoch": epoch,
-               "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"]}
+               "filter": {"systems": recipe["systems"], "rate": recipe["rate"]}, "near": recipe["near"], "vrs": recipe.get("vrs")}
         # Привязка запоминается в выпуске всегда, когда она есть: панель показывает её у любой сети
         if link:
             sub = subnet["link"]
@@ -1496,7 +1512,7 @@ class Store:
             # Координаты базы в ITRF2020 сначала приводятся к ITRF2014: это миллиметры, но честные
             pre = helmert.from_itrf2020(epoch) if recipe["coords"] == "itrf2020" else {k: 0.0 for k in ("tx", "ty", "tz", "rx", "ry", "rz", "m")}
             through = pre if recipe["transform"] == "gsk2011" else {k: round(float(link[k]) + pre[k], 6) for k in pre}
-            out["transform"] = {"target": recipe["transform"], "link": through, "epoch": epoch, "source": "ITRF2020" if recipe["coords"] == "itrf2020" else "ITRF2014",
+            out["transform"] = {"target": recipe["transform"], "igd": recipe.get("igd", "g2008"), "link": through, "epoch": epoch, "source": "ITRF2020" if recipe["coords"] == "itrf2020" else "ITRF2014",
                                 "area": helmert.area([s["src"] for s in stations.values()])}
         return out
 
@@ -1512,12 +1528,12 @@ class Store:
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
                 "max_shift": shifts[worst] if worst else None, "max_station": worst,
                 # Координаты могут остаться теми же, а измениться — параметры пересчёта, спутники, частота
-                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near"))}
+                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near") and same("vrs"))}
 
     def _network_view(self, conn, row: dict) -> dict:
         out = _jsonable(row)
-        out["points"] = [{"id": p["id"], "name": p["name"], "station": p["code"], "enabled": p["enabled"]} for p in conn.execute(
-            "SELECT m.id, m.name, m.enabled, s.code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE m.network_id = %s ORDER BY m.name", (row["id"],))]
+        out["points"] = [{"id": p["id"], "name": p["name"], "station": p["code"], "enabled": p["enabled"], "rtcm_station_id": p["rtcm_station_id"]} for p in conn.execute(
+            "SELECT m.id, m.name, m.enabled, m.rtcm_station_id, s.code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE m.network_id = %s ORDER BY m.name", (row["id"],))]
         sub = conn.execute("SELECT name FROM subnets WHERE id = %s", (row["subnet_id"],)).fetchone() if row["subnet_id"] else None
         out["subnet"] = sub["name"] if sub else None
         out["history"] = [{"version": h["version"], "at": h["created_at"].isoformat(), "by": (h["release"] or {}).get("by", ""), "stations": len((h["release"] or {}).get("stations") or {})}
@@ -1562,7 +1578,7 @@ class Store:
                 raise Problem("Расчётный модуль, из которого выпускалась эта сеть, удалён: новую версию выпустить не из чего." if net else "Укажите расчётный модуль.")
             new = self._network_build(conn, self._subnet(conn, subnet_id) if recipe["source"] == "subnet" else None, recipe)
             # plan — что будет передаваться: по нему панель показывает параметры до выпуска
-            plan = {k: new.get(k) for k in ("kind", "recipe", "params", "mode", "used", "epoch", "transform", "filter", "near")}
+            plan = {k: new.get(k) for k in ("kind", "recipe", "params", "mode", "used", "epoch", "transform", "filter", "near", "vrs")}
             plan["codes"] = sorted(new["stations"])
             return {"stations": len(new["stations"]), "plan": plan, **self._network_diff(new, net["release"] if net else {})}
 
@@ -1619,6 +1635,46 @@ class Store:
                 raise Problem("Изменений нет: координаты в расчётном модуле и состав сети те же, что в действующей версии.")
             net = self._update(conn, "networks", network_id, {"recipe": Jsonb(recipe), "kind": self._recipe_kind(recipe)})
             return self._network_store(conn, who, net, release, "выпущена новая версия сети")
+
+    def network_vrs(self, who: dict, network_id: int, options) -> dict:
+        """Виртуальные базы сети: включить с настройками, изменить настройки или выключить (options пусто).
+        Координаты сети не трогаются и новая версия не выпускается: настройки действуют сразу."""
+        with self.db.transaction() as conn:
+            net = self._network(conn, network_id, lock=True)
+            value = vrs_options(options) if options else None
+            recipe = {**(net["recipe"] or self._recipe(net["kind"])), "vrs": value}
+            release = {**(net["release"] or {}), "vrs": value, "recipe": recipe}
+            if value and f"{net['name']}_{VRS}" in {r["name"] for r in conn.execute("SELECT name FROM mountpoints")}:
+                raise Problem(f"Имя {net['name']}_{VRS} уже занято обычной точкой подключения: переименуйте её.")
+            row = self._update(conn, "networks", network_id, {"recipe": Jsonb(recipe), "release": Jsonb(release), "updated_at": dt.datetime.now(dt.timezone.utc)})
+            self._audit(conn, who, "виртуальные базы: " + ("настройки" if value else "выключены"), "networks", network_id, {"name": net["name"], "vrs": value})
+            return self._network_view(conn, row)
+
+    def vrs_tasks(self) -> list[dict]:
+        """Что считать службе VRS: сети с включёнными виртуальными базами, их станции и настройки.
+        ecef — координаты станции для расчёта (все в одной системе), out — те, что сеть объявляет роверу."""
+        with self.db.connection() as conn:
+            nets = conn.execute("SELECT id, name, title, release FROM networks ORDER BY name").fetchall()
+            catalog = {r["code"]: [float(r["x"]), float(r["y"]), float(r["z"])] for r in conn.execute("SELECT code, x, y, z FROM stations WHERE enabled AND x IS NOT NULL")}
+            live = {(r["network_id"], r["code"]) for r in conn.execute(
+                "SELECT m.network_id, s.code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE m.network_id IS NOT NULL AND m.enabled AND s.enabled")}
+        out = []
+        for n in nets:
+            release = n["release"] or {}
+            if not release.get("vrs"):
+                continue
+            stations = []
+            for code, st in sorted((release.get("stations") or {}).items()):
+                if (n["id"], code) not in live:
+                    continue  # станция выключена в этой сети
+                if st.get("pass"):
+                    # Сеть из основной сети: координаты из каталога, они же объявляются роверу
+                    if code in catalog:
+                        stations.append({"code": code, "ecef": catalog[code], "out": catalog[code]})
+                elif "src" in st:
+                    stations.append({"code": code, "ecef": [float(v) for v in st["src"]], "out": [float(st["x"]), float(st["y"]), float(st["z"])]})
+            out.append({"id": n["id"], "name": f"{n['name']}_{VRS}", "title": n["title"] or "", "stations": stations, "options": release["vrs"]})
+        return out
 
     def network_rollback(self, who: dict, network_id: int, version: int) -> dict:
         """Вернуть прежний выпуск: он становится новой версией, история не теряется."""
@@ -1945,8 +2001,10 @@ class Store:
 
 
 NTRIP_PORT = 2101  # общий порт раздачи
+VRS = "VRS"  # точка «виртуальная база»: ИМЯСЕТИ_VRS
 NEAR = "NEAR"  # точка «ближайшая база»: ровер сам попадает на ближайшую станцию по своему положению
 NET_COORDS = ("itrf2014", "itrf2020", "net1", "gsk2011")  # в чём координаты базы; net1 — как основная сеть
+NET_IGD = ("g2001", "g2008", "g2017")  # редакция параметров ИГД для пересчёта в МСК-66 и СК-42
 NET_TRANSFORMS = ("none", "msk66", "sk42", "gsk2011")  # пересчёт в потоке сообщениями 1021 и 1025
 NET_SYSTEMS = ("G", "R", "E", "C")  # GPS, ГЛОНАСС, Galileo, BeiDou
 NET_RATES = (1, 2, 5, 10)  # секунд между эпохами
@@ -2005,3 +2063,57 @@ def ppp_mean(days: list[dict]) -> dict:
 
 def dumps(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+# ---------- Настройки виртуальных баз ----------
+# Список один на всех: служба VRS, эта проверка и панель читают modules/vrs/options.json
+
+VRS_OPTIONS = json.loads((Path(__file__).resolve().parents[2] / "modules" / "vrs" / "options.json").read_text(encoding="utf-8"))
+
+
+def vrs_options(given) -> dict:
+    """Настройки виртуальных баз, приведённые к допустимым. Чего нет — по умолчанию; негодное — отказ с объяснением."""
+    if given is True:
+        given = {}
+    if not isinstance(given, dict):
+        raise Problem("Настройки виртуальных баз: набор полей.")
+    out = {}
+    for o in VRS_OPTIONS:
+        key, kind = o["key"], o["kind"]
+        if key not in given or given[key] is None or given[key] == "":
+            out[key] = o["default"]
+            continue
+        v = given[key]
+        label = o["label"]
+        if kind in ("int", "number"):
+            try:
+                v = float(str(v).replace(",", "."))
+            except (TypeError, ValueError):
+                raise Problem(f"{label}: нужно число.") from None
+            if kind == "int":
+                if v != int(v):
+                    raise Problem(f"{label}: нужно целое число.")
+                v = int(v)
+            if not o["min"] <= v <= o["max"]:
+                raise Problem(f"{label}: от {o['min']} до {o['max']}{' ' + o['unit'] if o.get('unit') else ''}.")
+        elif kind == "bool":
+            v = bool(v)
+        elif kind == "choice":
+            allowed = [c[0] for c in o["choices"]]
+            if v not in allowed and str(v) in [str(c) for c in allowed]:
+                v = allowed[[str(c) for c in allowed].index(str(v))]
+            if v not in allowed:
+                raise Problem(f"{label}: " + ", ".join(str(c[1]) for c in o["choices"]) + ".")
+        elif kind == "text":
+            v = str(v).strip()
+            if not v or len(v) > o["max"] or not re.fullmatch(r"[\x20-\x7e]+", v):
+                raise Problem(f"{label}: до {o['max']} знаков, латиница, цифры и знаки.")
+        elif kind == "systems":
+            allowed = [c[0] for c in o["choices"]]
+            if not isinstance(v, list) or not v or any(c not in allowed for c in v):
+                raise Problem(f"{label}: выберите хотя бы одну.")
+            v = [c for c in allowed if c in v]
+        out[key] = v
+    if out["minAux"] > out["aux"]:
+        raise Problem("Минимум соседей на спутник не может быть больше числа соседних станций.")
+    return out

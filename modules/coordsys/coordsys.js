@@ -24,6 +24,15 @@
     sk95: { name: 'СК-95', ellipsoid: 'krass', dx: 24.47, dy: -130.89, dz: -81.56, wx: 0, wy: 0, wz: -0.13, m: -0.22e-6 },
   };
 
+  // Параметры ИГД «СК-42 → общеземная система» по редакциям стандарта. Каталог основной сети
+  // подогнан под редакцию 2008 года, поэтому она по умолчанию; остальные — на выбор сети раздачи,
+  // если у роверов заказчика принята другая. Разница между редакциями — дециметры.
+  const IGD = {
+    g2001: { title: 'ГОСТ Р 51794-2001', note: 'СК-42 → ПЗ-90 → WGS-84', dx: 23.92, dy: -141.27, dz: -80.9, wx: 0, wy: -0.35, wz: -0.82, m: -0.12e-6 },
+    g2008: { title: 'ГОСТ Р 51794-2008', note: 'СК-42 → ПЗ-90.02 → WGS-84; под неё подогнан каталог сети', dx: 23.57, dy: -140.95, dz: -79.8, wx: 0, wy: -0.35, wz: -0.79, m: -0.22e-6 },
+    g2017: { title: 'ГОСТ 32453-2017', note: 'СК-42 → ПЗ-90.11', dx: 23.557, dy: -140.844, dz: -79.778, wx: -0.0023, wy: -0.34646, wz: -0.79421, m: -0.228e-6 },
+  };
+
   // Системы координат. zones — готовый список зон либо правило, по которому зона
   // выбирается по долготе. verified: false — параметры с каталогом не сверены,
   // и окно обязано об этом сказать.
@@ -230,5 +239,5 @@
     return { id: system.id, name: system.name, datum: { ...datum, id: system.datum }, ellipsoid: ELLIPSOIDS[datum.ellipsoid], zones: (system.zones || []).map((z) => ({ ...z, verified: system.verified && z.verified !== false })) };
   }
 
-  return { list, register, convert, inverse, describe, gaussKruger, gaussKrugerInverse, fromWgs84, toWgs84, toGeodetic, ELLIPSOIDS, DATUMS };
+  return { list, register, convert, inverse, describe, gaussKruger, gaussKrugerInverse, fromWgs84, toWgs84, toGeodetic, ELLIPSOIDS, DATUMS, IGD };
 });

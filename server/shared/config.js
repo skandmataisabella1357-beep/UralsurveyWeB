@@ -13,6 +13,7 @@ const DEFAULTS = {
   bind: '127.0.0.1',
   ingest: { busPort: 7101, statePort: 7102 },
   caster: { statePort: 7103, port: 2101, enabled: false },
+  vrs: { port: 7106 }, // внутреннее соединение раздачи со службой виртуальных баз
   control: { port: 8080 },
   stations: [],
 };
@@ -46,6 +47,7 @@ function validate(config) {
   checkPort(config.caster.statePort, 'caster.statePort');
   checkPort(config.caster.port, 'caster.port');
   checkPort(config.control.port, 'control.port');
+  checkPort(config.vrs.port, 'vrs.port');
   if (!Array.isArray(config.stations)) throw new Error('Настройка stations — список станций.');
   const seen = new Set();
   config.stations.forEach((st, i) => {

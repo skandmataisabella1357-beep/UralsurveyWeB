@@ -83,7 +83,8 @@
   }
 
   // Всё, что уходит роверу: одно сообщение 1021 и по сообщению 1025 на зону.
-  // spec — { target: 'msk66' | 'sk42' | 'gsk2011', link, area, epoch, source: 'ITRF2014' | 'ITRF2020' }:
+  // spec — { target: 'msk66' | 'sk42' | 'gsk2011', link, area, epoch, source: 'ITRF2014' | 'ITRF2020', igd }:
+  //   igd — редакция параметров ИГД для msk66 и sk42: 'g2001', 'g2008' (по умолчанию) или 'g2017';
   //   link — для msk66 и sk42 привязка «координаты базы → система основной сети»; для gsk2011 —
   //     малая поправка «координаты базы → ITRF2014» (нужна только при координатах в ITRF2020);
   //   area — область действия в градусах { lat, lon, dLat, dLon }; epoch — эпоха координат, год.
@@ -103,7 +104,8 @@
     } else {
       if (!spec.link) return null;
       const system = CoordSys.describe('msk66');
-      datum = system.datum;
+      const igd = CoordSys.IGD[spec.igd] || CoordSys.IGD.g2008;
+      datum = { ...system.datum, ...igd, name: `${system.datum.name}, ${igd.title}` };
       ell = system.ellipsoid;
       seven = compose(spec.link, datum);
       zones = spec.target === 'msk66' ? system.zones : gkZones(spec.area);
@@ -117,7 +119,7 @@
       zone: z.zone, from: z.from, systemId: z.zone, verified: z.verified !== false, projection: 1, lat0: 0, lon0: z.lon0, scale: 1,
       falseEasting: z.falseEasting, falseNorthing: z.falseNorthing,
     }));
-    return { target: spec.target, system: TARGETS[spec.target], datum: datum.name, helmert, projections };
+    return { target: spec.target, system: TARGETS[spec.target], datum: datum.name, igd: spec.target === 'gsk2011' ? null : (CoordSys.IGD[spec.igd] ? spec.igd : 'g2008'), helmert, projections };
   }
 
   // Зона по долготе: последняя, чья граница не восточнее точки

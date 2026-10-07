@@ -131,6 +131,13 @@ class BusClient extends EventEmitter {
     });
   }
 
+  // Сообщение другой стороне (для служб, где разговор идёт в обе стороны). Нет связи — false.
+  send(header, body) {
+    if (!this.connected || !this.socket) return false;
+    this.socket.write(encode(header, body));
+    return true;
+  }
+
   stop() {
     this.running = false;
     clearTimeout(this.timer);
