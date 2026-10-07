@@ -583,7 +583,7 @@
   // ---------- Отображение: что показывать на карте ----------
   // Настройки запоминаются в браузере администратора.
 
-  const SHOW = { base: 'osm', labels: true, grid: true, regions: true, msk: false, sk42: false, gsk: false, fix: false, float: false, over: false, contours: true, vectors: true, rovers: true };
+  const SHOW = { base: 'osm', labels: true, grid: true, regions: true, msk: false, sk42: false, gsk: false, fix: false, float: false, over: false, contours: true, vectors: true, vrs: true, rovers: true };
   try { Object.assign(SHOW, JSON.parse(localStorage.getItem('admin-display') || '{}')); } catch (err) { /* настройки по умолчанию */ }
   // Подложки карты. Все открытые, без ключей; filter — как подложка перекрашивается под тёмную тему
   const BASES = {
@@ -617,6 +617,7 @@
     ['radii', 'Зоны покрытия', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.500"/><circle cx="12" cy="12" r="9.500" stroke-dasharray="2 3"/>'],
     ['contours', 'Контуры расчётных модулей', '<path d="M5 8 13 4l6 6-3 9-9-2Z" stroke-dasharray="3 3"/>'],
     ['vectors', 'Векторы расчёта', '<path d="M5 18 12 6l7 12Z"/><circle cx="5" cy="18" r="1.500"/><circle cx="12" cy="6" r="1.500"/><circle cx="19" cy="18" r="1.500"/>'],
+    ['vrs', 'Стороны сети VRS', '<circle cx="12" cy="12" r="8.500" stroke-dasharray="2.600 2.600"/><path d="M12 7v6M9.500 13h5M8.500 18l3.500-5 3.500 5"/><circle cx="12" cy="7" r="1.100"/>'],
     ['rovers', 'Роверы на связи', '<circle cx="12" cy="9" r="3"/><path d="M12 12v9M8 21h8"/>'],
   ];
   function applyDisplay() {
@@ -635,6 +636,7 @@
     grid: 'Градусная сетка поверх карты с подписями широт и долгот.',
     regions: 'Граница Свердловской области — светящейся линией, соседние области — тонким пунктиром с названиями.',
     contours: 'Границы расчётных модулей пунктиром с их именами. Контур, который сейчас правят или обводят, виден всегда.',
+    vrs: 'Стороны сети виртуальных баз у выбранной сети раздачи: зелёная — готова, жёлтая — набирает спутники, красная — не готова, светлый пунктир — не считается (длиннее предела). Ореол станции — самопроверка, кольцо с лучами — виртуальная база ровера.',
     vectors: 'Векторы последнего расчёта расчётного модуля: цвет от красного (метр и хуже) к зелёному (5 мм и лучше).',
     rovers: 'Роверы, которые сейчас подключены и передают своё положение: зелёный — фиксированное решение, жёлтый — плавающее, голубой — дифференциальное, розовый — автономное.',
   };
@@ -1549,7 +1551,7 @@
     const has = (r) => r.results && r.results.stations;
     // В сети раздачи с виртуальными базами карта показывает её стороны VRS; векторы расчётного
     // модуля появляются, только пока открыто окно модуля. Слои не накладываются.
-    const vrsHere = Boolean(scopeNet() && scopeNet().recipe && scopeNet().recipe.vrs) && !$('sub-dialog').open;
+    const vrsHere = Boolean(scopeNet() && scopeNet().recipe && scopeNet().recipe.vrs) && !$('sub-dialog').open && SHOW.vrs;
     const row = SHOW.vectors && view === 'subnets' && !sub.drawing && !vrsHere ? (rows.find((r) => r.id === sub.id && has(r)) || rows.find(has)) : null;
     const where = (code) => { const st = liveOf(code); return st && st.position ? [st.position.lat, st.position.lon] : null; };
     // Линии перерисовываются только при новом расчёте или сдвиге станций: иначе подсказка и
@@ -2473,7 +2475,7 @@
     // Стороны видны только в своей сети: в основной сети чужих виртуальных баз нет. Открытое окно
     // виртуальных баз показывает стороны своей сети, где бы оно ни было открыто.
     const busy = !vrsDialog.open && ($('sub-dialog').open || (view === 'subnets' && SHOW.vectors && !scope)); // на карте векторы расчётного модуля
-    const shown = busy ? null : (scope || (vrsDialog.open ? vrs.id : null));
+    const shown = busy || !SHOW.vrs ? null : (scope || (vrsDialog.open ? vrs.id : null));
     const nets = state && shown ? state.networks.filter((n) => n.id === shown && lists.networks.some((x) => x.id === n.id && x.recipe && x.recipe.vrs)) : [];
     const key = JSON.stringify(nets.map((n) => [n.id, n.baselines.map((b) => [b.a, b.b, vrsLinkState(b, n.options.maxAge), b.fixed, b.seen]), n.sessions.map((x) => [x.id, x.master, x.base, x.info && x.info.aux]), n.stations.map((x) => (x.check ? x.check.now : null))]));
     if (key === vmap.key) return;
@@ -2510,7 +2512,7 @@
           if (linked.has(id) || ghosts.has(id)) continue;
           ghosts.add(id);
           const p = [[x.lat, x.lon], [y.lat, y.lon]];
-          shapes.push(L.polyline(p, { className: 'adm-vrs-line is-far', color: VRS_TONE.idle, weight: 1, opacity: 0.55, dashArray: '2 8', lineCap: 'round', interactive: false }));
+          shapes.push(L.polyline(p, { className: 'adm-vrs-line is-far', color: '#e6e2ff', weight: 1.8, opacity: 0.95, dashArray: '7 8', lineCap: 'butt', interactive: false }));
           const hit = L.polyline(p, { color: '#ffffff', weight: 16, opacity: 0.01, lineCap: 'round' });
           hit.bindTooltip(`<div class="adm-vec"><b>${esc(x.code)} – ${esc(y.code)}</b> · ${Math.round(km)} км · не считается<br>${km > n.options.maxKm ? `длиннее предела ${n.options.maxKm} км («Самая длинная сторона» в настройках)` : `у станции уже ${n.options.maxLinks} ближайших соседей («Соседей у станции» в настройках)`}</div>`, { sticky: true, opacity: 1 });
           hit.on('click', () => openVrs(n.id));

@@ -430,3 +430,36 @@ test('VRS: неровная ионосфера замечается, и сеть
   assert.strictEqual(wild.tune().level >= 2, true);
   assert.ok(wild.baselines.every((bl) => bl.smooth === bl.o.ionoSmooth / 2));
 });
+
+test('VRS: запасной источник эфемерид берёт почасовые файлы ближних станций и не качает дважды', async () => {
+  const navsource = require('../modules/vrs/navsource');
+  const names = ['WTZR00DEU_R_20262801600_01H_MN.rnx.gz', 'ARTU00RUS_R_20262801600_01H_MN.rnx.gz', 'ARTU00RUS_R_20262801600_01H_GN.rnx.gz', 'ZZZZ00XXX_R_20262801600_01H_MN.rnx.gz', 'KIT300UZB_R_20262801600_01H_MN.rnx.gz', 'MD5SUMS'];
+  assert.deepStrictEqual(navsource.choose(names, 2), ['ARTU00RUS_R_20262801600_01H_MN.rnx.gz', 'KIT300UZB_R_20262801600_01H_MN.rnx.gz']);
+  assert.deepStrictEqual(navsource.choose(['MD5SUMS']), []);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ural-nav-'));
+  const calls = [];
+  const body = require('zlib').gzipSync(Buffer.from(rinex(constellation(), 'G07')));
+  const run = async (args) => {
+    calls.push(args.join(' '));
+    if (args.includes('-l')) return names.join('\n');
+    fs.writeFileSync(args[args.indexOf('-o') + 1], body);
+    return '';
+  };
+  try {
+    const now = Date.UTC(2026, 9, 7, 17, 30);
+    const a = await navsource.ensure(dir, now, { hours: 2, count: 3, run });
+    assert.strictEqual(a.error, '');
+    assert.strictEqual(a.files.length, 3);
+    assert.strictEqual(navlib.parse(fs.readFileSync(a.files[0], 'latin1')).size, 1);
+    const before = calls.length;
+    const b = await navsource.ensure(dir, now, { hours: 2, count: 3, run });
+    assert.strictEqual(calls.length, before, 'взятые часы заново не запрашиваются');
+    assert.strictEqual(b.files.length, 3);
+    // Архив молчит — остаётся скачанное раньше, причина названа
+    const c = await navsource.ensure(dir, now + 3600000, { hours: 2, count: 3, run: async () => { throw new Error('CDDIS не ответил'); } });
+    assert.strictEqual(c.error, 'CDDIS не ответил');
+    assert.strictEqual(c.files.length, 3);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -25,6 +25,7 @@ const rtcm = require('../rtcm/messages');
 const ephemeris = require('../../modules/rtknet/ephemeris');
 const obs = require('../../modules/vrs/obs');
 const navlib = require('../../modules/vrs/nav');
+const navsource = require('../../modules/vrs/navsource');
 const { Network } = require('../../modules/vrs/network');
 const { PAIRS } = require('../../modules/vrs/model');
 const { OPTIONS, clean } = require('../../modules/vrs/options');
@@ -54,7 +55,7 @@ function pairOf(sys, sigs) {
 
 async function start({ config, log = console.log, rules = {}, directoryUrl = process.env.URAL_DIRECTORY || '', directoryKey,
   dataDir = process.env.URAL_DATA || path.join(__dirname, '..', '..', 'backend', 'data'), statePort = Number(process.env.URAL_VRS_PORT || 7105),
-  tasksFile = process.env.URAL_VRS_TASKS || '', fetchNav = ephemeris.ensure, clock = () => Date.now() }) {
+  tasksFile = process.env.URAL_VRS_TASKS || '', fetchNav = ephemeris.ensure, fetchHourly = fetchNav === ephemeris.ensure ? navsource.ensure : null, clock = () => Date.now() }) {
   const R = { ...RULES, ...rules };
   const startedAt = Date.now();
   const navDir = path.join(dataDir, 'vrs', 'brdc');
@@ -70,18 +71,35 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
 
   // ---------- Эфемериды ----------
 
+  // Два источника: сводный файл BKG и почасовые файлы станций из архива CDDIS. Берётся всё, что
+  // удалось получить: если один архив молчит, орбиты приходят из другого. Свежесть — возраст
+  // эфемерид GPS: старше трёх часов расчёт их не берёт, и сеть остаётся без спутников.
   async function loadNav() {
     try {
       const now = clock();
-      const got = await fetchNav(navDir, now - R.navHours * 3600000, now);
-      if (!got.files.length) { navState.error = got.error || 'архив эфемерид недоступен'; return; }
+      const errors = [];
+      const files = [];
+      const main = await fetchNav(navDir, now - R.navHours * 3600000, now).catch((err) => ({ files: [], error: err.message }));
+      files.push(...main.files);
+      if (main.error) errors.push(`BKG: ${main.error}`);
+      if (fetchHourly) {
+        const spare = await fetchHourly(path.join(navDir, 'hourly'), now).catch((err) => ({ files: [], error: err.message }));
+        files.push(...spare.files);
+        if (spare.error) errors.push(`CDDIS: ${spare.error}`);
+      }
+      if (!files.length) { navState.error = errors.join('; ') || 'архивы эфемерид недоступны'; return; }
       const next = new Map();
-      for (const file of got.files) navlib.parse(fs.readFileSync(file, 'latin1'), next);
-      if (!next.size) { navState.error = 'в файле эфемерид нет спутников'; return; }
+      for (const file of files) { try { navlib.parse(fs.readFileSync(file, 'latin1'), next); } catch (err) { /* битый файл не мешает остальным */ } }
+      if (!next.size) { navState.error = 'в файлах эфемерид нет спутников'; return; }
       nav = next;
       navState.at = Date.now();
       navState.sats = next.size;
-      navState.error = got.error || '';
+      const gps = obs.gpsFromUnix(now);
+      const ages = [...next].filter(([sat]) => sat[0] === 'G').map(([, list]) => (gps - list[list.length - 1].toe) / 60).sort((a, b) => a - b);
+      navState.fresh = ages.length ? Math.round(ages[Math.floor(ages.length / 2)]) : null;
+      // Пока орбиты свежие, молчание одного архива — не беда и в панели не показывается как ошибка
+      navState.error = navState.fresh !== null && navState.fresh <= 170 ? '' : (errors.join('; ') || 'эфемериды устарели');
+      navState.note = errors.join('; ');
       for (const e of engines.values()) e.net.setNav(nav);
     } catch (err) {
       navState.error = err.message;
@@ -382,7 +400,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
   const state = jsonServer({
     '/state': () => ({
       service: 'vrs', startedAt, ingestLink: bus.connected, casterLink: Boolean(link), linkPort,
-      nav: { sats: navState.sats, ageSec: navState.at ? Math.round((Date.now() - navState.at) / 1000) : null, error: navState.error },
+      nav: { sats: navState.sats, ageSec: navState.at ? Math.round((Date.now() - navState.at) / 1000) : null, error: navState.error, freshMin: navState.fresh === undefined ? null : navState.fresh, note: navState.note || '' },
       load: Math.round(work.last), // миллисекунд работы на секунду времени
       faults, lastFault,
       networks: [...engines.values()].map(describe),
