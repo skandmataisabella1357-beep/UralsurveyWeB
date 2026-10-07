@@ -661,3 +661,6 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 :root[data-theme='light'] .adm-kind.is-iono1 { --tone: #2f86cf; }
 :root[data-theme='light'] .adm-kind.is-iono2 { --tone: #a8641a; }
 :root[data-theme='light'] .adm-kind.is-iono3 { --tone: #c22a4a; }
+/* Сторона, которую сеть VRS не ведёт: длиннее предела */
+.adm-vrs-line.is-far { color: #8a86a8; filter: none; }
+:root[data-theme='light'] .adm-vrs-line.is-far { stroke: #6f6b8e; }

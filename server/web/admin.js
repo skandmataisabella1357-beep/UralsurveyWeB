@@ -1498,6 +1498,8 @@
   const QUALITY = { ppp: ['PPP-AR', 'is-online'], reference: ['опорная', ''], fix: ['фиксированное', 'is-online'], float: ['плавающее', 'is-wait'], none: ['нет решения', 'is-fail'] };
   const sub = { id: null, fresh: false, step: 'contour', draft: null, draftFor: undefined, drawing: false, layer: null };
   $('sub-dialog').addEventListener('cancel', () => { sub.drawing = false; });
+  // Окно модуля открыли или закрыли — на карте меняется слой: векторы модуля либо стороны VRS
+  new MutationObserver(() => { drawVectors(); try { drawVrsMap(); } catch (err) { /* слой VRS ещё не заведён */ } }).observe($('sub-dialog'), { attributes: true, attributeFilter: ['open'] });
 
   const subRow = () => (sub.fresh ? null : rows.find((r) => r.id === sub.id) || null);
   const mm = (v) => (v === null || v === undefined ? '—' : num(v * 1000, Math.abs(v) < 0.1 ? 1 : 0));
@@ -1545,7 +1547,10 @@
   function drawVectors() {
     if (!map) return;
     const has = (r) => r.results && r.results.stations;
-    const row = SHOW.vectors && view === 'subnets' && !sub.drawing ? (rows.find((r) => r.id === sub.id && has(r)) || rows.find(has)) : null;
+    // В сети раздачи с виртуальными базами карта показывает её стороны VRS; векторы расчётного
+    // модуля появляются, только пока открыто окно модуля. Слои не накладываются.
+    const vrsHere = Boolean(scopeNet() && scopeNet().recipe && scopeNet().recipe.vrs) && !$('sub-dialog').open;
+    const row = SHOW.vectors && view === 'subnets' && !sub.drawing && !vrsHere ? (rows.find((r) => r.id === sub.id && has(r)) || rows.find(has)) : null;
     const where = (code) => { const st = liveOf(code); return st && st.position ? [st.position.lat, st.position.lon] : null; };
     // Линии перерисовываются только при новом расчёте или сдвиге станций: иначе подсказка и
     // закреплённое окно вектора пропадали бы при каждом обновлении состояния
@@ -2461,12 +2466,13 @@
     const share = b.seen ? b.fixed / b.seen : 0;
     return b.fixed >= 5 && share >= 0.75 ? 'ready' : (b.fixed >= 4 ? 'warm' : 'cold');
   }
+  const kmBetweenLL = (a, b) => { const r = Math.PI / 180; const h = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2; return 12742 * Math.asin(Math.sqrt(h)); };
   function drawVrsMap() {
     if (!map) return;
     const state = vrs.data && vrs.data.up ? vrs.data.state : null;
     // Стороны видны только в своей сети: в основной сети чужих виртуальных баз нет. Открытое окно
     // виртуальных баз показывает стороны своей сети, где бы оно ни было открыто.
-    const busy = view === 'subnets' && SHOW.vectors && !vrsDialog.open; // на карте векторы расчётного модуля
+    const busy = !vrsDialog.open && ($('sub-dialog').open || (view === 'subnets' && SHOW.vectors && !scope)); // на карте векторы расчётного модуля
     const shown = busy ? null : (scope || (vrsDialog.open ? vrs.id : null));
     const nets = state && shown ? state.networks.filter((n) => n.id === shown && lists.networks.some((x) => x.id === n.id && x.recipe && x.recipe.vrs)) : [];
     const key = JSON.stringify(nets.map((n) => [n.id, n.baselines.map((b) => [b.a, b.b, vrsLinkState(b, n.options.maxAge), b.fixed, b.seen]), n.sessions.map((x) => [x.id, x.master, x.base, x.info && x.info.aux]), n.stations.map((x) => (x.check ? x.check.now : null))]));
@@ -2492,6 +2498,24 @@
         hit.bindTooltip(`<div class="adm-vec">${info}</div>`, { sticky: true, opacity: 1 });
         hit.on('click', () => openVrs(n.id));
         shapes.push(hit);
+      }
+      // Стороны, которые сеть не ведёт из-за предела длины, тоже видны — серым пунктиром: у каждой
+      // станции показываются три ближайшие соседки, чтобы рисунок сети был цельным
+      const linked = new Set(n.baselines.map((b) => [b.a, b.b].sort().join('|')));
+      const ghosts = new Set();
+      for (const x of n.stations) {
+        const near = n.stations.filter((y) => y !== x).map((y) => ({ y, km: kmBetweenLL(x, y) })).sort((p, q) => p.km - q.km).slice(0, 3);
+        for (const { y, km } of near) {
+          const id = [x.code, y.code].sort().join('|');
+          if (linked.has(id) || ghosts.has(id)) continue;
+          ghosts.add(id);
+          const p = [[x.lat, x.lon], [y.lat, y.lon]];
+          shapes.push(L.polyline(p, { className: 'adm-vrs-line is-far', color: VRS_TONE.idle, weight: 1, opacity: 0.55, dashArray: '2 8', lineCap: 'round', interactive: false }));
+          const hit = L.polyline(p, { color: '#ffffff', weight: 16, opacity: 0.01, lineCap: 'round' });
+          hit.bindTooltip(`<div class="adm-vec"><b>${esc(x.code)} – ${esc(y.code)}</b> · ${Math.round(km)} км · не считается<br>${km > n.options.maxKm ? `длиннее предела ${n.options.maxKm} км («Самая длинная сторона» в настройках)` : `у станции уже ${n.options.maxLinks} ближайших соседей («Соседей у станции» в настройках)`}</div>`, { sticky: true, opacity: 1 });
+          hit.on('click', () => openVrs(n.id));
+          shapes.push(hit);
+        }
       }
       // Самопроверка — мягкий ореол вокруг станции: зелёный, жёлтый, красный
       for (const x of n.stations) {
