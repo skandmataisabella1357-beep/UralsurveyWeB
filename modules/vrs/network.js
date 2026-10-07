@@ -20,6 +20,10 @@ const DEFAULTS = {
   minAux: 2, // спутник отдаётся, если поправка есть хотя бы от стольких соседей
   method: 'plane', // plane — плоскость по соседям, idw — по обратным расстояниям, none — без поправок сети
   power: 2, // степень расстояния для idw
+  ionoMethod: 'same', // способ для ионосферы: same — как основной, либо plane, idw, lsc
+  ionoAux: 0, // сколько соседей для ионосферы; 0 — столько же, сколько для остального
+  trend: 1, // доля общего наклона ионосферы в способе lsc: 0 — без наклона, больше — ближе к плоскости
+  corrKm: 80, // км: на каком расстоянии поправка «забывает» соседнюю (для способа lsc)
   limit: 1.5, // предел суммы весов соседей: дальше поправки за край сети не продолжаются
   auto: true, // самонастройка по ионосфере: при неровной — выше маска и короче сглаживание
   autoMask: 5, // градусов: на столько поднимается маска при неровной ионосфере
@@ -41,9 +45,42 @@ const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 // За пределами сети поправки не продолжаются как попало: сумма весов ограничена limit, то есть
 // точка как бы подтягивается к ведущей станции. Возвращает { w, reach }: reach < 1 — ограничение
 // сработало (точка вне сети или соседи стоят неудачно).
-function weights(method, pts, p, { power = 2, limit = 1.5 } = {}) {
+function weights(method, pts, p, { power = 2, limit = 1.5, corr = 80e3, trend = 0 } = {}) {
   let w = pts.map(() => 0);
   if (method === 'none' || !pts.length) return { w, reach: 1 };
+  if (method === 'lsc') {
+    // Коллокация: поправка в двух местах похожа тем сильнее, чем они ближе (связь спадает с
+    // расстоянием как exp(−d/corr)). Веса — наилучшие для такой связи; в отличие от плоскости,
+    // они не выдумывают наклон там, где его нет, и за краем сети не растут без конца.
+    // Поправки заданы как «станция минус ведущая», отсюда вид ковариаций.
+    // trend — доля общего наклона: поправка = плавный наклон над районом + местная неровность.
+    // Ноль — наклона не ждём (чистая коллокация); чем больше, тем ближе к плоскости.
+    const k = (a, b) => Math.exp(-Math.hypot(a.e - b.e, a.n - b.n) / corr);
+    const lin = (a, b) => trend * (a.e * b.e + a.n * b.n) / 2.5e9; // расстояния в долях 50 км
+    const o = { e: 0, n: 0 };
+    const n = pts.length;
+    const a = pts.map((x, i) => pts.map((y, j) => k(x, y) - k(x, o) - k(y, o) + 1 + lin(x, y) + (i === j ? 1e-3 : 0)));
+    const b = pts.map((x) => k(p, x) - k(p, o) - k(x, o) + 1 + lin(p, x));
+    // Решение небольшой системы исключением Гаусса с выбором главного элемента
+    for (let c = 0; c < n; c++) {
+      let piv = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(a[r][c]) > Math.abs(a[piv][c])) piv = r;
+      if (Math.abs(a[piv][c]) < 1e-12) return { w, reach: 1 };
+      [a[c], a[piv]] = [a[piv], a[c]]; [b[c], b[piv]] = [b[piv], b[c]];
+      for (let r = c + 1; r < n; r++) {
+        const f = a[r][c] / a[c][c];
+        for (let q = c; q < n; q++) a[r][q] -= f * a[c][q];
+        b[r] -= f * b[c];
+      }
+    }
+    for (let c = n - 1; c >= 0; c--) {
+      let v = b[c];
+      for (let q = c + 1; q < n; q++) v -= a[c][q] * w[q];
+      w[c] = v / a[c][c];
+    }
+    const total = w.reduce((sum, v) => sum + Math.abs(v), 0);
+    return total <= limit ? { w, reach: 1 } : { w: w.map((v) => v * limit / total), reach: limit / total };
+  }
   if (method === 'idw') {
     const d0 = Math.hypot(p.e, p.n);
     if (d0 < 1) return { w, reach: 1 };
@@ -242,7 +279,12 @@ class Network {
   // Возвращает { master, aux: [коды], sats: Map 'G05' -> { iono, geo, n, ref } }:
   // iono — разность ионосферы «точка минус ведущая» на первой частоте, geo — остальное
   // (остаток тропосферы и орбит), обе — относительно опорного спутника своей системы.
-  interpolate(master, pos, t, { skip = [], aux = this.o.aux, method = this.o.method, minAux = this.o.minAux, power = this.o.power, strict = this.o.strict } = {}) {
+  interpolate(master, pos, t, { skip = [], aux = this.o.aux, method = this.o.method, minAux = this.o.minAux, power = this.o.power, strict = this.o.strict,
+    ionoMethod = this.o.ionoMethod, ionoAux = this.o.ionoAux, corrKm = this.o.corrKm, trend = this.o.trend } = {}) {
+    // Ионосфера может считаться своим способом и по своему числу соседей: она мельче по рисунку,
+    // чем тропосфера, и ей полезны дополнительные станции
+    const mI = !ionoMethod || ionoMethod === 'same' ? method : ionoMethod;
+    const nI = ionoAux > 0 ? ionoAux : aux;
     const M = this.stations.get(master);
     const rel = (ecef) => { const v = ecefToEnu(M.lat, M.lon, [ecef[0] - M.ecef[0], ecef[1] - M.ecef[1], ecef[2] - M.ecef[2]]); return { e: v[0], n: v[1] }; };
     const p = rel(pos);
@@ -250,7 +292,7 @@ class Network {
     const helpers = M.links.filter(fresh).map((bl) => ({ bl, st: bl.a === M ? bl.b : bl.a, sign: bl.a === M ? 1 : -1 }))
       .filter((h) => !skip.includes(h.st.code))
       .map((h) => ({ ...h, d: dist(h.st.ecef, pos), at: rel(h.st.ecef) }))
-      .sort((x, y) => x.d - y.d).slice(0, method === 'none' ? 0 : aux);
+      .sort((x, y) => x.d - y.d).slice(0, method === 'none' && mI === 'none' ? 0 : Math.max(aux, nI));
     const out = new Map();
     let reach = 1;
     const value = (h, sat) => {
@@ -272,14 +314,15 @@ class Network {
       for (const [sat, hs] of sats) {
         const use = hs.filter((h) => ref.hs.includes(h));
         if (use.length < need) continue;
-        const { w, reach: got } = weights(method, use.map((h) => h.at), p, { power, limit: this.o.limit });
-        reach = Math.min(reach, got);
+        const tune = { power, limit: this.o.limit, corr: corrKm * 1000 };
+        const useG = use.slice(0, aux); const useI = use.slice(0, nI);
+        // Наклон над районом есть у ионосферы; остаток тропосферы и орбит — местный
+        const g = weights(method, useG.map((h) => h.at), p, tune);
+        const q = weights(mI, useI.map((h) => h.at), p, { ...tune, trend });
+        reach = Math.min(reach, g.reach, q.reach);
         let iono = 0; let geo = 0;
-        use.forEach((h, i) => {
-          const s = value(h, sat); const r = value(h, ref.sat);
-          iono += w[i] * h.sign * (s.still - r.still);
-          geo += w[i] * h.sign * (s.calm - r.calm);
-        });
+        useG.forEach((h, i) => { geo += g.w[i] * h.sign * (value(h, sat).calm - value(h, ref.sat).calm); });
+        useI.forEach((h, i) => { iono += q.w[i] * h.sign * (value(h, sat).still - value(h, ref.sat).still); });
         out.set(sat, { iono, geo, n: use.length, ref: sat === ref.sat });
       }
     }

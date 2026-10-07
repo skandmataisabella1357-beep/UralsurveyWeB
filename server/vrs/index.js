@@ -28,6 +28,7 @@ const navlib = require('../../modules/vrs/nav');
 const navsource = require('../../modules/vrs/navsource');
 const { Network } = require('../../modules/vrs/network');
 const { PAIRS } = require('../../modules/vrs/model');
+const residuals = require('../../modules/vrs/residuals');
 const { OPTIONS, clean } = require('../../modules/vrs/options');
 
 const RULES = {
@@ -41,6 +42,7 @@ const RULES = {
   keepShare: 0.15, // и не меньше чем на такую долю расстояния
   positionSec: 5, // как часто повторять координаты виртуальной базы
   descriptorSec: 10, // и описание оборудования
+  residualSec: 10, // и остатки сети (сообщение 1030), если включены
   minSats: 5, // меньше спутников — эпоха роверу не отдаётся
 };
 
@@ -95,7 +97,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       navState.at = Date.now();
       navState.sats = next.size;
       const gps = obs.gpsFromUnix(now);
-      const ages = [...next].filter(([sat]) => sat[0] === 'G').map(([, list]) => (gps - list[list.length - 1].toe) / 60).sort((a, b) => a - b);
+      const ages = [...next].filter(([sat]) => sat[0] === 'G').map(([, list]) => Math.abs(gps - list[list.length - 1].toe) / 60).sort((a, b) => a - b);
       navState.fresh = ages.length ? Math.round(ages[Math.floor(ages.length / 2)]) : null;
       // Пока орбиты свежие, молчание одного архива — не беда и в панели не показывается как ошибка
       navState.error = navState.fresh !== null && navState.fresh <= 170 ? '' : (errors.join('; ') || 'эфемериды устарели');
@@ -123,7 +125,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       let e = engines.get(task.id);
       if (!e || e.core !== core) {
         if (e) log(`VRS: сеть ${task.name} — изменились станции или настройки расчёта, поиск неоднозначностей начат заново`);
-        e = { id: task.id, core, net: null, checks: new Map(), builtAt: Date.now() };
+        e = { id: task.id, core, net: null, checks: new Map(), quality: new residuals.Quality(), builtAt: Date.now() };
         e.net = new Network({
           stations: stations.map((s) => ({ code: s.code, ecef: s.ecef })), nav,
           options: { maxKm: o.maxKm, maxLinks: o.maxLinks },
@@ -137,7 +139,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       e.options = o;
       e.stations = stations;
       // На выдачу: настройки, которые действуют сразу
-      Object.assign(e.net.o, { auto: o.auto, aux: o.aux, minAux: o.minAux, method: o.method, strict: o.strict, mask: o.mask, systems: o.systems, limit: o.limit, maxAge: o.maxAge, power: o.power });
+      Object.assign(e.net.o, { corrKm: o.corrKm, trend: o.trend, ionoAux: o.ionoAux, auto: o.auto, aux: o.aux, minAux: o.minAux, method: o.method, strict: o.strict, mask: o.mask, systems: o.systems, limit: o.limit, maxAge: o.maxAge, power: o.power });
       // Сдвиг из системы расчёта в систему, в которой сеть объявляет координаты базы
       e.shifts = stations.filter((s) => Array.isArray(s.out) && s.out.length === 3 && s.out.every(Number.isFinite)).map((s) => ({ ecef: s.ecef, d: [s.out[0] - s.ecef[0], s.out[1] - s.ecef[1], s.out[2] - s.ecef[2]] }));
     }
@@ -286,6 +288,13 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       const body = obs.encode({ sys, stationId, epoch: obs.epochField(sys, t), multiple: i < systems.length - 1, sats });
       if (body) out.push(rtcm.frame(body));
     });
+    // Остатки сети по спутникам GPS — сообщение 1030, раз в десять секунд
+    if (o.residuals && now - (s.residualAt || 0) >= R.residualSec * 1000) {
+      s.residualAt = now;
+      const ppm = e.net.index ? e.net.index / 1.96 : 0.5; // неровность ионосферы, мм на км
+      const gps = used.filter((x) => x.sys === 'G').map((x) => { const q = e.quality.of(x.sat); return { prn: x.prn, soc: q.geo, sod: 0, soh: 0, sic: q.iono, sid: ppm }; });
+      if (gps.length) out.push(rtcm.frame(residuals.encode({ stationId, tow: ((t % 604800) + 604800) % 604800, refs: (v.aux.length || 0) + 1, sats: gps })));
+    }
     s.sent += 1;
     s.lastSentAt = now;
     tell({ t: 'data', id: s.id, master: s.master, sats: used.length }, Buffer.concat(out));
@@ -325,6 +334,8 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
       for (const st of e.net.stations.values()) {
         let c = null;
         try { c = e.net.check(st.code); } catch (err) { e.fault = err.message; }
+        // Ошибки по спутникам копятся: по ним роверу сообщается, каким спутникам верить меньше
+        if (c && c.sats >= 4) e.quality.add(c.rows, Date.now() / 1000);
         const list = e.checks.get(st.code) || [];
         list.push(c && c.sats >= 4 ? { at: Date.now(), master: c.master, km: c.km, aux: c.aux, reach: c.reach, sats: c.sats, phase: c.phase, iono: c.iono, geo: c.geo, rawIono: c.rawIono, rawGeo: c.rawGeo } : { at: Date.now(), sats: c ? c.sats : 0 });
         while (list.length > R.history) list.shift();

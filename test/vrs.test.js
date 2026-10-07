@@ -306,7 +306,7 @@ test('VRS: служба целиком — потоки станций с шин
   // Сеть объявляет роверу координаты со сдвигом (как сеть «как основная»): расчёт идёт в своих
   const SHIFT = [1.714, -3.776, 1.452];
   const tasks = path.join(dir, 'tasks.json');
-  fs.writeFileSync(tasks, JSON.stringify({ networks: [{ id: 7, name: 'N3_VRS', stations: STATIONS.map((s) => ({ code: s.code, ecef: s.ecef, out: s.ecef.map((v, i) => v + SHIFT[i]) })), options: { maxKm: 120, stationId: 100 } }] }));
+  fs.writeFileSync(tasks, JSON.stringify({ networks: [{ id: 7, name: 'N3_VRS', stations: STATIONS.map((s) => ({ code: s.code, ecef: s.ecef, out: s.ecef.map((v, i) => v + SHIFT[i]) })), options: { maxKm: 120, stationId: 100, residuals: true } }] }));
   const bus = new BusServer({ port: 0 });
   const busPort = await bus.ready;
   let now = T0;
@@ -351,7 +351,12 @@ test('VRS: служба целиком — потоки станций с шин
     assert.strictEqual(data[0].header.master, 'AAAA');
     const frames = new StreamParser().push(Buffer.concat(data.map((m) => m.body))).filter((f) => f.kind === 'rtcm');
     const types = [...new Set(frames.map((f) => f.type))].sort();
-    assert.deepStrictEqual(types, [1006, 1008, 1033, 1074, 1094]);
+    assert.deepStrictEqual(types, [1006, 1008, 1030, 1033, 1074, 1094]);
+    // Остатки сети: по каждому спутнику GPS из потока, со станцией и числом станций сети
+    const res = require('../modules/vrs/residuals').decode(frames.find((f) => f.type === 1030).payload);
+    const gpsNow = obs.decode(1074, frames.filter((f) => f.type === 1074)[0].payload).sats.map((x) => x.prn);
+    assert.strictEqual(res.stationId, 100);
+    assert.ok(res.refs >= 3 && res.sats.length >= 8 && res.sats.every((x) => gpsNow.includes(x.prn) && x.sic > 0 && x.soc > 0), JSON.stringify(res));
     // Объявленные координаты базы — в системе сети: положение ровера плюс её сдвиг
     const pos = rtcm.decodePosition(frames.find((f) => f.type === 1006).payload);
     assert.strictEqual(pos.stationId, 100);
@@ -462,4 +467,42 @@ test('VRS: запасной источник эфемерид берёт поч�
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('VRS: коллокация — веса по близости, точны на станции и не растут за краем', () => {
+  const pts = [{ e: 40e3, n: 0 }, { e: 0, n: 40e3 }, { e: -30e3, n: -20e3 }];
+  // В точке соседней станции поправка — её собственная; у ведущей поправки нет
+  const at = weights('lsc', pts, pts[0], { corr: 100e3 }).w;
+  assert.ok(Math.abs(at[0] - 1) < 0.01 && Math.abs(at[1]) < 0.01 && Math.abs(at[2]) < 0.01);
+  assert.ok(weights('lsc', pts, { e: 0, n: 0 }, { corr: 100e3 }).w.every((v) => Math.abs(v) < 1e-9));
+  // Ближняя станция весит больше дальней
+  const near = weights('lsc', pts, { e: 30e3, n: 5e3 }, { corr: 100e3 }).w;
+  assert.ok(near[0] > near[1] && near[0] > Math.abs(near[2]));
+  // С наклоном линейное поле восстанавливается почти как плоскостью, без наклона — заметно хуже
+  const field = (p) => 3e-6 * p.e - 2e-6 * p.n;
+  const p = { e: 10e3, n: 15e3 };
+  const err = (trend) => Math.abs(weights('lsc', pts, p, { corr: 100e3, trend }).w.reduce((s, v, i) => s + v * field(pts[i]), 0) - field(p));
+  assert.ok(err(10) < err(0) && err(10) < 0.004, `${err(10)} и ${err(0)}`);
+  // Далеко за краем сумма весов ограничена
+  const far = weights('lsc', pts, { e: 500e3, n: 400e3 }, { corr: 100e3, trend: 3, limit: 1.5 });
+  assert.ok(far.w.reduce((s, v) => s + Math.abs(v), 0) <= 1.5 + 1e-9 && far.w.every(Number.isFinite));
+});
+
+test('VRS: сообщение 1030 собирается и разбирается, оценки по спутникам копятся', () => {
+  const residuals = require('../modules/vrs/residuals');
+  const body = residuals.encode({ stationId: 77, tow: 345678.4, refs: 4, sats: [{ prn: 5, soc: 0.012, sod: 0, soh: 0, sic: 0.031, sid: 0.87 }, { prn: 31, soc: 9, sod: 99, soh: 99, sic: 9, sid: 99 }] });
+  assert.strictEqual(body.length, Math.ceil((56 + 2 * 49) / 8));
+  const m = residuals.decode(body);
+  assert.deepStrictEqual([body.readUInt16BE(0) >> 4, m.tow, m.stationId, m.refs, m.sats.length], [1030, 345678, 77, 4, 2]);
+  assert.deepStrictEqual(m.sats[0], { prn: 5, soc: 0.012, sod: 0, soh: 0, sic: 0.031, sid: 0.87 });
+  // Значения сверх предела поля не переполняют его, а упираются в предел
+  assert.deepStrictEqual(m.sats[1], { prn: 31, soc: 0.1275, sod: 5.11, soh: 6.3, sic: 0.5115, sid: 10.23 });
+  const q = new residuals.Quality(600);
+  assert.strictEqual(q.of('G05').known, false);
+  q.add([{ sat: 'G05', iono: 0.04, geo: 0.01 }], 1000);
+  q.add([{ sat: 'G05', iono: 0.0, geo: 0.01 }], 1030);
+  const got = q.of('G05');
+  assert.ok(got.known && got.iono > 0.02 && got.iono < 0.04 && Math.abs(got.geo - 0.01) < 1e-9, JSON.stringify(got));
+  q.add([{ sat: 'G07', iono: 0.01, geo: 0.01 }], 1000 + 3700);
+  assert.strictEqual(q.of('G05').known, false, 'давние оценки забываются');
 });
