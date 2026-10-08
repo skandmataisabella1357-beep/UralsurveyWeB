@@ -373,7 +373,23 @@
     let html = `<div class="adm-scope"><button class="adm-chip" type="button" data-scope="" aria-current="${!within}">Основная сеть</button>${lists.networks.map((n) => `<button class="adm-chip is-${netTone(recipeOf(n))}" type="button" data-scope="${n.id}" aria-current="${Boolean(within) && within.id === n.id}" title="${esc(n.title || n.name)}: ${netLabel(recipeOf(n))}">${esc(n.name)}</button>`).join('')}</div>`;
     html += head('stations', within ? `Базы сети ${esc(within.name)}` : 'Станции', all.length ? `${on}/${all.length}` : '0', within ? '' :
       `${all.length ? `<button class="adm-plus" type="button" data-add="${anyOn ? 'stop' : 'resume'}" title="${anyOn ? 'Остановить приём по сети' : 'Возобновить приём по сети'}">${anyOn ? '■' : '▶'}</button>` : ''}<button class="adm-plus" type="button" data-add="station" title="Добавить станцию">+</button>`);
-    if (!isFolded('stations')) html += all.map((s) => railStation(s, false)).join('') || '<div class="rail-empty">Станций пока нет.</div>';
+    if (!isFolded('stations')) {
+      // Сеть одна, но в каталоге станции разложены по областям: область определяется по положению
+      // станции на карте. Группа сворачивается; пока областей одна — список идёт подряд.
+      const groups = new Map();
+      for (const st of all) { const name = regionOf(st.code); (groups.get(name) || groups.set(name, []).get(name)).push(st); }
+      if (groups.size < 2) html += all.map((st) => railStation(st, false)).join('') || '<div class="rail-empty">Станций пока нет.</div>';
+      else {
+        const order = [...groups.keys()].sort((a, b) => (b.startsWith('Свердлов') - a.startsWith('Свердлов')) || ((a === NO_REGION) - (b === NO_REGION)) || a.localeCompare(b, 'ru'));
+        for (const name of order) {
+          const list = groups.get(name);
+          const live = list.filter((st) => { const x = liveOf(st.code); return st.enabled && x && x.link.state === 'online'; }).length;
+          const id = `region:${name}`;
+          html += `<div class="cat-head is-region" role="button" tabindex="0" data-fold="${esc(id)}" aria-expanded="${!isFolded(id)}"><i class="adm-twist"></i><span>${esc(name)}</span><span class="fig">${live}/${list.length}</span></div>`;
+          if (!isFolded(id)) html += list.map((st) => railStation(st, false)).join('');
+        }
+      }
+    }
     html += head('subnets', 'Расчётные модули', String(lists.subnets.length), '<button class="adm-plus" type="button" data-add="subnet" title="Новый расчётный модуль: обвести контур">+</button>');
     if (!isFolded('subnets')) {
       if (!lists.subnets.length) html += '<div class="rail-empty">Расчётных модулей пока нет.</div>';
@@ -634,7 +650,7 @@
   const TIP_SHOW = {
     labels: 'Коды станций рядом с точками на карте.',
     grid: 'Градусная сетка поверх карты с подписями широт и долгот.',
-    regions: 'Граница Свердловской области — светящейся линией, соседние области — тонким пунктиром с названиями.',
+    regions: 'Границы всех регионов России — светящимся контуром, с названиями.',
     contours: 'Границы расчётных модулей пунктиром с их именами. Контур, который сейчас правят или обводят, виден всегда.',
     vrs: 'Стороны сети виртуальных баз у выбранной сети раздачи: зелёная — готова, жёлтая — набирает спутники, красная — не готова, светлый пунктир — не считается (длиннее предела). Ореол станции — самопроверка, кольцо с лучами — виртуальная база ровера.',
     vectors: 'Векторы последнего расчёта расчётного модуля: цвет от красного (метр и хуже) к зелёному (5 мм и лучше).',
@@ -971,8 +987,30 @@
     window.StationMap.fit(upload.parsed.features.flatMap((x) => x.points));
   });
 
-  // Границы областей: Свердловская — светящейся линией, соседи — тонким пунктиром с названиями
+  // Границы областей: все — светящейся линией, соседние со Свердловской — с названиями
   const regions = { data: null, layer: null, asked: false };
+  // Область станции — по её положению: в какой контур попала. Считается один раз на положение.
+  const NO_REGION = 'Область не определена';
+  const regionCache = new Map();
+  function loadRegions() {
+    if (regions.data || regions.asked) return;
+    regions.asked = true;
+    fetch('/regions.json').then((r) => r.json()).then((d) => { regions.data = d.regions; regionCache.clear(); renderRail(); drawRegions(); }).catch(() => { regions.asked = false; });
+  }
+  function regionOf(code) {
+    const st = liveOf(code);
+    const row = lists.stations.find((x) => x.code === code);
+    let at = st && st.position ? [st.position.lat, st.position.lon] : null;
+    if (!at && row && row.x !== null && window.CoordSys) { const g = window.CoordSys.toGeodetic([Number(row.x), Number(row.y), Number(row.z)], { a: 6378137, f: 1 / 298.257223563 }); at = [g.lat * 180 / Math.PI, g.lon * 180 / Math.PI]; }
+    if (!at) return NO_REGION;
+    if (!regions.data) { loadRegions(); return NO_REGION; }
+    const key = `${code}:${at[0].toFixed(2)}:${at[1].toFixed(2)}`;
+    if (regionCache.has(key)) return regionCache.get(key);
+    let name = NO_REGION;
+    for (const r of regions.data) if (r.rings.some((ring) => inside(at[0], at[1], ring))) { name = r.name; break; }
+    regionCache.set(key, name);
+    return name;
+  }
   function drawRegions() {
     if (!map) return;
     if (!SHOW.regions) { if (regions.layer) { regions.layer.remove(); regions.layer = null; } return; }
@@ -983,20 +1021,26 @@
       }
       return;
     }
-    if (regions.layer) return;
+    // Свечение — у своей области и у тех, где стоят станции сети; остальные области страны —
+    // той же линией, но без свечения: иначе карта на всю Россию двигалась бы рывками
+    const busy = new Set(lists.stations.map((st) => regionOf(st.code)));
+    const key = [...busy].sort().join('|');
+    if (regions.layer && regions.key === key) return;
+    if (regions.layer) regions.layer.remove();
+    regions.key = key;
     const pane = map.getPane('regions') || map.createPane('regions');
     pane.style.zIndex = 340;
+    pane.classList.add('adm-region-pane');
     pane.style.pointerEvents = 'none';
     const layers = [];
     for (const r of regions.data) {
       for (const ring of r.rings) {
-        if (r.main) {
-          // Широкая бледная подсветка и тонкая яркая линия поверх — неоновый контур
-          layers.push(L.polygon(ring, { pane: 'regions', color: '#a890ff', weight: 5, opacity: 0.16, fill: false, interactive: false }));
-          layers.push(L.polygon(ring, { pane: 'regions', color: '#b9a6ff', weight: 1.4, opacity: 0.95, fillColor: '#a890ff', fillOpacity: 0.035, interactive: false, className: 'adm-region-main' }));
-        } else {
-          layers.push(L.polygon(ring, { pane: 'regions', color: '#84c8ff', weight: 0.9, opacity: 0.5, dashArray: '2 5', fill: false, interactive: false }));
-        }
+        // Все области — неоновым контуром, как Свердловская: широкая бледная подсветка и тонкая
+        // яркая линия поверх. Заливка — только у своей области, чтобы соседние не темнили карту.
+        // Все регионы — одинаковым светящимся контуром. Свечение наложено один раз на весь слой
+        // (см. ниже), а не на каждый контур: так карта на всю страну двигается без рывков.
+        layers.push(L.polygon(ring, { pane: 'regions', color: '#a890ff', weight: 5, opacity: r.main ? 0.16 : 0.12, fill: false, interactive: false, smoothFactor: 2 }));
+        layers.push(L.polygon(ring, { pane: 'regions', color: '#b9a6ff', weight: r.main ? 1.4 : 1.2, opacity: r.main ? 0.95 : 0.9, fill: Boolean(r.main), fillColor: '#a890ff', fillOpacity: 0.035, interactive: false, smoothFactor: 2 }));
       }
       const big = r.rings.slice().sort((a, b) => b.length - a.length)[0];
       const c = [big.reduce((sum, p) => sum + p[0], 0) / big.length, big.reduce((sum, p) => sum + p[1], 0) / big.length];

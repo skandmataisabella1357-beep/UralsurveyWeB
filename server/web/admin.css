@@ -664,3 +664,9 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 /* Сторона, которую сеть VRS не ведёт: длиннее предела */
 .adm-vrs-line.is-far { color: #e6e2ff; filter: drop-shadow(0 0 1.5px rgba(20, 16, 48, 0.95)) drop-shadow(0 0 1.5px rgba(20, 16, 48, 0.95)); }
 :root[data-theme='light'] .adm-vrs-line.is-far { stroke: #4b4670; filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.95)); }
+/* Каталог: станции сети по областям */
+.adm-rail .cat-head.is-region { margin: 2px 0 0 6px; padding: 2px 8px 2px 4px; font-size: 10.5px; color: var(--muted); border: 0; background: none; }
+.adm-rail .cat-head.is-region > span:first-of-type { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-rail .cat-head.is-region:hover { color: var(--text); }
+/* Границы регионов: свечение одно на весь слой */
+.adm-region-pane { filter: drop-shadow(0 0 4px #a890ff) drop-shadow(0 0 9px rgba(132, 200, 255, 0.4)); }
