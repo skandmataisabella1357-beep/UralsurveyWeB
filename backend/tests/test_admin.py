@@ -833,6 +833,16 @@ class AdminTest(unittest.TestCase):
         # Новый выпуск сети настройки виртуальных баз сохраняет
         status, n, _ = a.call("POST", f"/api/admin/networks/{n['id']}/release", {"recipe": {**n["recipe"], "rate": 5}})
         self.assertEqual((status, n["version"], n["release"]["vrs"]["method"], n["recipe"]["rate"]), (200, 2, "idw", 5), n)
+        # Переименование сети: вслед за ней меняются имена её точек и точки виртуальной базы
+        for bad in ("a_b", "", "слишком", "ABCDEFGHIJKLM"):
+            self.assertEqual(a.call("PATCH", f"/api/admin/networks/{n['id']}", {"name": bad})[0], 400, bad)
+        status, n, _ = a.call("PATCH", f"/api/admin/networks/{n['id']}", {"name": "66gsk"})
+        self.assertEqual((status, n["name"], n["version"], sorted(p["name"] for p in n["points"])), (200, "66GSK", 2, ["66GSK_VR0", "66GSK_VR1", "66GSK_VR2"]), n)
+        self.assertEqual(a.call("GET", "/internal/vrs", headers=key)[1]["networks"][0]["name"], "66GSK_VRS")
+        self.assertEqual(a.call("GET", "/internal/directory", headers=key)[1]["virtual"][0]["name"], "66GSK_VRS")
+        self.assertEqual(a.call("PATCH", f"/api/admin/networks/{n['id']}", {"name": "66GSK"})[0], 200, "то же имя — ничего не меняется")
+        status, n, _ = a.call("PATCH", f"/api/admin/networks/{n['id']}", {"name": "VNET", "title": "обратно"})
+        self.assertEqual((status, n["name"], n["title"], n["release"]["vrs"]["method"]), (200, "VNET", "обратно", "idw"), n)
         # Состояние службы и список настроек для панели: служба в тесте не запущена
         status, got, _ = a.call("GET", "/api/admin/vrs")
         self.assertEqual((status, got["up"], got["options"][0]["key"]), (200, False, "systems"))

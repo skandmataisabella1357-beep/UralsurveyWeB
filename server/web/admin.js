@@ -1883,6 +1883,7 @@
     'bind-copy': 'Скопировать семь параметров текстом — для ввода в контроллер.',
     'release-next': 'Обновить сеть свежими координатами из расчётного модуля. Перед выпуском покажется, на сколько сдвинется каждая станция.',
     'release-del': 'Удалить сеть и её точки подключения. Расчётный модуль и расчёты останутся.',
+    'net-rename': 'Сменить латинское имя сети. Вместе с ним сменятся имена всех её точек: роверам придётся вписать новое имя точки.',
     close: 'Закрыть окно. Несохранённая правка контура пропадёт.',
     'net-close': 'Закрыть окно сетей раздачи.',
     export: 'Скачать таблицу координат станций: X, Y, Z, широта и долгота, МСК-66, СК-42 или UTM; высота над эллипсоидом или по геоиду Russia2008.',
@@ -2774,10 +2775,8 @@
     // Новой сети порт предлагается сразу — по области её станций: 70 и номер региона
     // (Свердловская — 7066). Порты 7000–7200 открыты; основная сеть остаётся на 2101.
     // Только когда все станции сети в одной области; иначе — общий порт.
-    if (net.id === null && !net.draft.portSet) {
-      const hint = regionPort(r.stations || draftCodes());
-      net.draft.port = hint && hint.whole ? String(hint.port) : '';
-    }
+    const area = net.id === null ? regionPort(r.stations || draftCodes()) : null;
+    if (net.id === null && !net.draft.portSet) net.draft.port = area && area.whole ? String(area.port) : '';
     if (isMain()) {
       r.coords = 'stream';
       r.transform = 'none';
@@ -2788,6 +2787,20 @@
     }
     const codes = draftCodes();
     if (r.stations) { r.stations = r.stations.filter((c) => codes.includes(c)); if (!r.stations.length) r.stations = null; }
+    // Сеть одной области называется по её номеру и системе координат: 66MSK, 74GSK, 66ITRF.
+    // С имени начинаются точки для роверов — 66MSK_NEAR, 66MSK_VRS, — так по имени видно, что это за сеть.
+    // Предлагается, пока администратор не вписал своё; занятое имя не предлагается.
+    if (net.id === null && area && area.whole) {
+      const sys = { msk66: 'MSK', sk42: 'SK42', gsk2011: 'GSK', none: r.coords === 'gsk2011' ? 'GSK' : (r.coords === 'net1' ? 'NET' : (r.coords === 'stream' ? 'RAW' : 'ITRF')) }[r.transform] || 'ITRF';
+      const taken = new Set(lists.networks.map((x) => x.name));
+      let name = `${String(area.code).padStart(2, '0')}${sys}`;
+      for (let k = 2; taken.has(name) && k < 10; k++) name = `${String(area.code).padStart(2, '0')}${sys}${k}`;
+      if (!net.draft.nameSet) net.draft.name = taken.has(name) ? '' : name;
+      if (!net.draft.titleSet) net.draft.title = `${area.name}, ${{ MSK: `МСК-${String(area.code).padStart(2, '0')}`, SK42: 'СК-42', GSK: 'ГСК-2011', NET: 'система основной сети', RAW: 'координаты как в потоке', ITRF: 'ITRF' }[sys]}`;
+    } else if (net.id === null) {
+      if (!net.draft.nameSet) net.draft.name = '';
+      if (!net.draft.titleSet) net.draft.title = '';
+    }
   }
 
   // Блок-схема: значение каждого блока одной строкой
@@ -2849,13 +2862,19 @@
           : 'Сеть из расчётного модуля: его принятые координаты, с выбором системы и пересчёта. Модуль остаётся чистым расчётом.');
     } else if (id === 'stations') {
       const codes = draftCodes();
-      body = `${tile('all', 1, `Все станции ${isMain() ? 'основной сети' : 'расчётного модуля'}<small>${codes.length}</small>`, !r.stations)}${codes.map((c) => `<label class="adm-opt adm-opt-check"><input type="checkbox" data-pick="${esc(c)}" ${!r.stations || r.stations.includes(c) ? 'checked' : ''}><span class="fig">${esc(c)}</span></label>`).join('')}`;
+      // Области, в которых стоят станции источника: нажатие оставляет в сети только станции области
+      const areas = new Map();
+      for (const c of codes) { const name = regionOf(c); if (name !== NO_REGION) (areas.get(name) || areas.set(name, []).get(name)).push(c); }
+      const same = (list) => Boolean(r.stations) && r.stations.length === list.length && list.every((c) => r.stations.includes(c));
+      const areaTiles = areas.size > 1 || (areas.size === 1 && [...areas.values()][0].length < codes.length)
+        ? `${[...areas].sort((a, b) => b[1].length - a[1].length).map(([name, list]) => tile('area', name, `${esc(name)}<small>${list.length} ${plural(list.length, 'станция', 'станции', 'станций')}</small>`, same(list), '', 'itrf')).join('')}<i class="adm-opt-gap"></i>` : '';
+      body = `${tile('all', 1, `Все станции ${isMain() ? 'основной сети' : 'расчётного модуля'}<small>${codes.length}</small>`, !r.stations)}${areaTiles}${codes.map((c) => `<label class="adm-opt adm-opt-check"><input type="checkbox" data-pick="${esc(c)}" ${!r.stations || r.stations.includes(c) ? 'checked' : ''}><span class="fig">${esc(c)}</span></label>`).join('')}`;
       note = 'Какие станции войдут в сеть. У каждой будет своя точка подключения.';
     } else if (id === 'coords' && isMain()) {
       body = '<span class="adm-opt is-local" aria-current="true">как в потоке</span>';
       note = 'Точки этой сети отдают те же координаты базы, что и обычные точки станций: как шлёт база либо из каталога, если у станции включена подмена. Другие системы координат доступны сети из расчётного модуля.';
-    } else if (id === 'coords') {    } else if (id === 'coords') {
-      body = Object.entries(COORDS).map(([k, name]) => tile('coords', k, name, r.coords === k, rules.coords[k] || '', k === 'net1' ? 'local' : (k === 'gsk2011' ? 'gsk' : 'itrf'))).join('');
+    } else if (id === 'coords') {
+      body = Object.entries(COORDS).filter(([k]) => k !== 'stream').map(([k, name]) => tile('coords', k, name, r.coords === k, rules.coords[k] || '', k === 'net1' ? 'local' : (k === 'gsk2011' ? 'gsk' : 'itrf'))).join('');
       note = { itrf2014: 'Настоящие координаты станций, как приняты в расчётном модуле.', itrf2020: 'То же в ITRF2020: отличие от ITRF2014 — миллиметры.',
         net1: 'В координаты уже внесена привязка: ровер работает в МСК как сейчас, ничего настраивать не надо.',
         gsk2011: 'ГСК-2011 закреплена на 2011 год: координаты перенесены по движению плиты, точность 2–3 см.' }[r.coords];
@@ -2959,7 +2978,7 @@
       body += `<div class="adm-actions">${n ? `<button class="btn btn-primary btn-small" type="button" data-do="release-next" ${d.subnet_id || isMain() ? '' : 'disabled'}>Выпустить версию ${n.version + 1}</button>
           ${back.length ? `<select class="adm-pick" id="net-back"><option value="">Вернуть версию…</option>${back.map((h) => `<option value="${h.version}">${h.version} — ${when(h.at)}</option>`).join('')}</select>` : ''}
           <button class="btn btn-quiet btn-small" type="button" data-do="net-reset">Сбросить правки</button><button class="btn btn-quiet btn-small" type="button" data-do="net-export">Таблица координат</button>
-          <button class="btn btn-quiet btn-small btn-danger" type="button" data-do="release-del">Удалить сеть</button><button class="btn btn-quiet btn-small" type="button" data-do="net-new">Новая сеть</button>`
+          <button class="btn btn-quiet btn-small" type="button" data-do="net-rename">Переименовать</button><button class="btn btn-quiet btn-small btn-danger" type="button" data-do="release-del">Удалить сеть</button><button class="btn btn-quiet btn-small" type="button" data-do="net-new">Новая сеть</button>`
         : '<button class="btn btn-primary btn-small" type="button" data-do="release-new">Выпустить сеть</button>'}</div>`;
     }
     body += '<div id="net-what"></div>';
@@ -2990,8 +3009,8 @@
   // Поля ввода пишутся в черновик сразу: перерисовка окна их не сбивает
   netDialog.addEventListener('input', (event) => {
     if (!net.draft) return;
-    if (event.target.id === 'net-name') net.draft.name = event.target.value;
-    if (event.target.id === 'net-title') net.draft.title = event.target.value;
+    if (event.target.id === 'net-name') { net.draft.name = event.target.value; net.draft.nameSet = Boolean(event.target.value.trim()); }
+    if (event.target.id === 'net-title') { net.draft.title = event.target.value; net.draft.titleSet = Boolean(event.target.value.trim()); }
     if (event.target.id === 'net-port') { net.draft.portSet = true; net.draft.port = event.target.value.trim(); const v = netDialog.querySelector('[data-block="port"] .adm-block-value'); if (v) v.textContent = net.draft.port || '2101'; }
   });
   netDialog.addEventListener('click', async (event) => {
@@ -3005,6 +3024,7 @@
       const v = opt.dataset.value;
       if (opt.dataset.opt === 'subnet') { r.source = v === 'main' ? 'main' : 'subnet'; net.draft.subnet_id = v === 'main' ? null : Number(v); r.stations = null; }
       if (opt.dataset.opt === 'all') r.stations = null;
+      if (opt.dataset.opt === 'area') { const list = draftCodes().filter((c) => regionOf(c) === v); r.stations = list.length && list.length < draftCodes().length ? list : null; }
       if (opt.dataset.opt === 'coords') r.coords = v;
       if (opt.dataset.opt === 'transform') r.transform = v;
       if (opt.dataset.opt === 'igd') r.igd = v;
@@ -3054,6 +3074,12 @@
         res = moved;
       }
       if (!same) res = await api(`/api/admin/networks/${n.id}/release`, 'POST', { recipe: d.recipe, subnet_id: d.subnet_id });
+    } else if (act === 'net-rename' && n) {
+      const name = (window.prompt(`Новое имя сети ${n.name} — латинские буквы и цифры, до 12 знаков.\nС него начинаются имена точек: ${n.name}_… станут НОВОЕ_…`, n.name) || '').trim().toUpperCase();
+      if (!name || name === n.name) return;
+      const busy = live ? live.clients.filter((c) => String(c.point || '').startsWith(`${n.name}_`)).length : 0;
+      if (!window.confirm(`Переименовать сеть ${n.name} в ${name}?\nТочки станут ${name}_…, включая ${name}_NEAR и ${name}_VRS.${busy ? `\nСейчас на точках сети роверов: ${busy} — они отключатся.` : ''}\nВсем, кто работает через эту сеть, нужно вписать в приборе новое имя точки.`)) return;
+      res = await api(`/api/admin/networks/${n.id}`, 'PATCH', { name });
     } else if (act === 'release-del' && n) {
       if (!window.confirm(`Удалить сеть ${n.name}? Её точки подключения (${n.points.length}) исчезнут, роверы на них отключатся. Расчётный модуль и его расчёты останутся.`)) return;
       res = await api(`/api/admin/networks/${n.id}`, 'DELETE');

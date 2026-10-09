@@ -1610,9 +1610,7 @@ class Store:
         """Выпустить новую сеть раздачи из расчётного модуля: имя, вид и первый снимок координат."""
         if not isinstance(data, dict):
             raise Problem("Запрос должен быть набором полей.")
-        name = str(data.get("name") or "").strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
-            raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
+        name = self._network_name(data.get("name"))
         recipe = self._recipe(data["recipe"] if data.get("recipe") is not None else data.get("kind"))
         if recipe["source"] == "subnet" and not isinstance(data.get("subnet_id"), int):
             raise Problem("Укажите расчётный модуль, из которого выпускается сеть, либо выберите источником основную сеть.")
@@ -1702,16 +1700,42 @@ class Store:
                 net = self._update(conn, "networks", network_id, fields)
             return self._network_store(conn, who, net, {**release, "restored": version}, "возвращена прежняя версия сети")
 
+    @staticmethod
+    def _network_name(value) -> str:
+        name = str(value or "").strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{1,12}", name):
+            raise Problem("Имя сети: латинские буквы и цифры, до 12 знаков. С него начинаются имена её точек подключения.")
+        return name
+
     def network_update(self, who: dict, network_id: int, data: dict) -> dict:
         with self.db.transaction() as conn:
             before = self._network(conn, network_id, lock=True)
             fields = {}
+            if "name" in data:
+                # Переименование: с имени сети начинаются имена её точек, поэтому меняются и они —
+                # вместе с точками «ближайшая база» и «виртуальная база». Роверам на этих точках
+                # придётся сменить имя точки; журнал сеансов остаётся под прежними именами.
+                name = self._network_name(data.get("name"))
+                if name != before["name"]:
+                    if conn.execute("SELECT 1 FROM networks WHERE name = %s AND id <> %s", (name, network_id)).fetchone():
+                        raise Problem(f"Сеть с именем {name} уже есть.", 409)
+                    old = before["name"] + "_"
+                    own = conn.execute("SELECT id, name FROM mountpoints WHERE network_id = %s", (network_id,)).fetchall()
+                    renamed = {p["id"]: (name + "_" + p["name"][len(old):])[:32] for p in own if p["name"].startswith(old)}
+                    taken = {r["name"] for r in conn.execute("SELECT name FROM mountpoints WHERE network_id IS DISTINCT FROM %s", (network_id,))}
+                    clash = sorted(n for n in [*renamed.values(), f"{name}_{NEAR}", f"{name}_{VRS}"] if n in taken)
+                    if clash or len(set(renamed.values())) != len(renamed):
+                        raise Problem(f"Имя {name} не подходит: точка {clash[0] if clash else name + '_…'} уже занята.", 409)
+                    for point_id, new in renamed.items():
+                        conn.execute("UPDATE mountpoints SET name = %s WHERE id = %s", (new, point_id))
+                    fields["name"] = name
             if "title" in data:
                 fields["title"] = str(data.get("title") or "").strip()[:80]
             if "port" in data:
                 fields["port"] = self._network_port(conn, data.get("port"), network_id)
             row = self._update(conn, "networks", network_id, fields)
-            self._audit(conn, who, "изменена", "networks", network_id, {"name": row["name"], "fields": sorted(fields), "port": row["port"] if "port" in fields else before["port"]})
+            self._audit(conn, who, "изменена", "networks", network_id, {"name": row["name"], "fields": sorted(fields), "port": row["port"] if "port" in fields else before["port"],
+                                                                         **({"was": before["name"]} if "name" in fields else {})})
             return self._network_view(conn, row)
 
     def network_delete(self, who: dict, network_id: int) -> None:
