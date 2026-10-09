@@ -485,8 +485,53 @@
   // Раздел поверх карты закрывается крестиком или клавишей Esc — открывается карта сети
   $('main-close').addEventListener('click', () => open('stations'));
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || $('main').hidden || document.querySelector('dialog[open]') || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    if (event.key !== 'Escape') return;
+    // Окно, открытое рядом с картой (не поверх всего), браузер по Esc сам не закрывает
+    const opened = [...document.querySelectorAll('dialog[open]')].pop();
+    if (opened) { if (!opened.matches(':modal')) shut(opened); return; }
+    if ($('main').hidden) return;
+    // В поле с текстом первый Esc стирает текст, следующий — закрывает раздел
+    if (/^(INPUT|TEXTAREA)$/.test(event.target.tagName) && event.target.value) return;
     open('stations');
+  });
+
+  // Любое всплывающее окно закрывается тремя способами: Esc, крестик, щелчок мимо окна.
+  // Закрытие идёт тем же путём, что и по Esc, поэтому окно успевает прибрать за собой.
+  function shut(dialog) {
+    if (dialog && dialog.open && dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
+  }
+  let pressedOutside = null;
+  document.addEventListener('mousedown', (event) => { pressedOutside = event.target.tagName === 'DIALOG' ? event.target : null; });
+  document.addEventListener('click', (event) => {
+    const cross = event.target.closest('[data-shut]');
+    if (cross) { shut(cross.closest('dialog')); return; }
+    // Щелчок по затемнению вокруг окна: и нажали, и отпустили мимо — выделение текста мышью окно не закроет
+    if (event.target.tagName === 'DIALOG' && pressedOutside === event.target) {
+      const box = event.target.getBoundingClientRect();
+      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) shut(event.target);
+    }
+  });
+
+  // Список — в файл для Excel: точка с запятой и метка кодировки, чтобы русские буквы открылись сразу
+  function saveCsv(name, table) {
+    const cell = (v) => { const t = String(v === null || v === undefined ? '' : v); return /[";\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const blob = new Blob(['\ufeff', table.map((row) => row.map(cell).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  // Таблицы без своей выгрузки на сервере выгружаются как есть: те же столбцы и строки, что на экране
+  $('list-export').addEventListener('click', (event) => {
+    const v = VIEWS[view];
+    if (v.export || !v.cols) return;
+    event.preventDefault();
+    const plain = (html) => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent.replace(/\u00a0/g, ' ').trim(); };
+    saveCsv(`uralsurvey-${view}-${new Date().toISOString().slice(0, 10)}.csv`, [v.cols.map((c) => c[0]), ...rows.map((r) => v.cols.map((c) => plain(String(c[1](r)))))]);
+    toast(`Выгружено строк: ${rows.length}`);
   });
 
   async function open(id) {
@@ -535,7 +580,7 @@
     $('acc-box').hidden = view !== 'access';
     if (view === 'outages') { $('list-box').hidden = true; return renderOutages(); }
     // Доступы рисует свой модуль: ему нужны только запросы к серверу и список роверов на связи
-    if (view === 'access') { $('list-box').hidden = true; return window.UralAccess.show({ box: $('acc-box'), dialog: $('acc-dialog'), api, toast, admin: isAdmin(), rovers: live ? live.clients : [] }); }
+    if (view === 'access') { $('list-box').hidden = true; return window.UralAccess.show({ box: $('acc-box'), dialog: $('acc-dialog'), api, toast, csv: saveCsv, admin: isAdmin(), rovers: live ? live.clients : [] }); }
     if (view === 'overview') return renderOverview();
     if (v.custom === 'subnets') {
       renderSubnets();
@@ -556,8 +601,8 @@
     $('list-search').hidden = !v.search;
     $('list-search').placeholder = v.searchHint || 'Поиск';
     $('list-add').hidden = v.readonly || v.custom || !isAdmin();
-    $('list-export').hidden = !v.export;
-    if (v.export) $('list-export').href = v.export;
+    $('list-export').hidden = !(v.export || (v.cols && !v.paged && !v.custom));
+    $('list-export').href = v.export || '#';
     if (v.custom === 'settings') return renderSettings();
     // В сети раздачи общие таблицы показывают только её: станции, точки, сеансы и отказы этой сети
     const within = scopeNet();

@@ -115,7 +115,7 @@ def workspace() -> str:
 
 def dialogs() -> str:
     """Все окна панели: форма записи, расчётного модуля, настройка."""
-    form = el("dialog", el(
+    form = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_shut="", title="Закрыть (Esc)"), el(
         "form", el("h2", id="form-title"), el("div", id="form-fields"), el("p", cls="hint", id="form-note", hidden=True), error("form-error"),
         el("div", button("Удалить", extra="btn-danger", id="form-delete", hidden=True), el("span", cls="adm-grow"), button("Отмена", id="form-cancel"),
            button("Сохранить", "primary", type="submit", id="form-save"), cls="dialog-actions"),
@@ -123,7 +123,7 @@ def dialogs() -> str:
     subnet = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_do="close", title="Закрыть"),
                 el("h2", el("span", id="sub-head"), el("span", cls="adm-chips", id="sub-jumps")), el("div", id="sub-body"),
                 cls="dialog adm-dialog adm-panel", id="sub-dialog")
-    setting = el("dialog", el(
+    setting = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_shut="", title="Закрыть (Esc)"), el(
         "form", el("h2", id="set-title"), field("", label_id="set-hint", id="set-value", type="number"), error("set-error"),
         el("div", button("Отмена", id="set-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),
         id="set-form", novalidate=True), cls="dialog adm-dialog", id="set-dialog")
@@ -132,7 +132,7 @@ def dialogs() -> str:
              el("p", cls="hint", id="run-stage"), el("div", el("i", id="run-bar"), cls="adm-progress"), el("ol", cls="log adm-run-log", id="run-log"),
              el("div", button("Закрыть", "primary", data_run="close"), cls="dialog-actions"), cls="dialog adm-dialog", id="run-dialog")
     # Загрузка слоя из файла KML или DXF и область работы логинов по слою
-    layer = el("dialog", el(
+    layer = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_shut="", title="Закрыть (Esc)"), el(
         "form", el("h2", "Новый слой"), el("input", type="file", id="layer-file", accept=".kml,.dxf", hidden=True),
         field("Имя слоя", id="layer-name", type="text", maxlength="80", autocomplete="off"),
         el("label", el("span", "Система координат чертежа"), el("select", id="layer-crs"), cls="field", id="layer-crs-box"),
@@ -140,7 +140,7 @@ def dialogs() -> str:
         el("p", cls="hint", id="layer-summary"), error("layer-error"),
         el("div", button("Отмена", id="layer-cancel"), button("Загрузить", "primary", type="submit"), cls="dialog-actions"),
         id="layer-form", novalidate=True), cls="dialog adm-dialog", id="layer-dialog")
-    area = el("dialog", el(
+    area = el("dialog", el("button", "×", cls="icon-btn adm-close", type="button", data_shut="", title="Закрыть (Esc)"), el(
         "form", el("h2", id="area-title"), el("p", "Отмеченные логины получают поправки только внутри контуров этого слоя. Ровер должен сообщать своё положение: без него сеанс закрывается через полминуты.", cls="hint"),
         el("div", cls="adm-sub-stations", id="area-list"), error("area-error"),
         el("div", button("Отмена", id="area-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),

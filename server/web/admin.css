@@ -674,3 +674,7 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 /* Крестик раздела: всегда в правом верхнем углу, не уезжает при прокрутке списка */
 .adm-float-close { position: sticky; top: 8px; z-index: 4; justify-self: end; width: 28px; height: 28px; margin: 12px 12px -52px 0; }
 .adm-float .adm-list-head { padding-right: 34px; }
+
+/* Крестик есть у каждого всплывающего окна, всегда в правом верхнем углу */
+dialog.adm-dialog > .adm-close { position: absolute; top: 10px; right: 10px; z-index: 2; }
+dialog.adm-dialog > form > h2:first-child, dialog.adm-dialog > h2 { padding-right: 34px; }

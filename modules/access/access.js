@@ -47,11 +47,12 @@
     const box = s.ctx.box;
     if (box.dataset.ready) return;
     box.dataset.ready = '1';
-    box.innerHTML = `<h2 class="ins-title adm-list-head"><span>Доступы</span><span class="adm-list-tools"><input class="adm-search" id="acc-search" type="search" placeholder="Логин, клиент, телефон"><span class="fig" id="acc-count"></span></span></h2>
+    box.innerHTML = `<h2 class="ins-title adm-list-head"><span>Доступы</span><span class="adm-list-tools"><input class="adm-search" id="acc-search" type="search" placeholder="Логин, клиент, телефон"><span class="fig" id="acc-count"></span><button class="btn btn-quiet btn-small" type="button" id="acc-export" title="Список как на экране — с учётом фильтра и поиска">Выгрузить CSV</button></span></h2>
       <div class="acc-chips" id="acc-chips"></div>
       <div class="adm-scroll"><table class="messages srv-table adm-rows acc-table"><thead><tr id="acc-head"></tr></thead><tbody id="acc-body"></tbody></table></div>`;
     box.addEventListener('input', (event) => { if (event.target.id === 'acc-search') { s.search = event.target.value.trim().toLowerCase(); draw(); } });
     box.addEventListener('click', (event) => {
+      if (event.target.id === 'acc-export') { exportList(); return; }
       const chip = event.target.closest('[data-acc-filter]');
       if (chip) { s.filter = chip.dataset.accFilter; draw(); return; }
       const th = event.target.closest('[data-acc-sort]');
@@ -83,6 +84,7 @@
     }[s.sort];
     const list = all.filter((r) => match(r, s.filter) && (!q || `${r.login} ${r.client} ${r.phone} ${r.device} ${r.note}`.toLowerCase().includes(q)))
       .sort((a, b) => { const x = key(a); const y = key(b); return (x < y ? -1 : x > y ? 1 : a.login.localeCompare(b.login)) * s.dir; });
+    s.list = list;
     box.querySelector('#acc-count').textContent = list.length === all.length ? String(all.length) : `${list.length} из ${all.length}`;
     box.querySelector('#acc-head').innerHTML = COLS.map(([id, name]) => `<th data-acc-sort="${id}" aria-sort="${s.sort === id ? (s.dir > 0 ? 'ascending' : 'descending') : 'none'}">${name}</th>`).join('');
     const body = list.map((r) => {
@@ -101,6 +103,17 @@
     if (body !== s.body) { s.body = body; box.querySelector('#acc-body').innerHTML = body; }
   }
 
+  // Выгрузка: то, что сейчас в списке, — с учётом фильтра, поиска и порядка. Паролей в файле нет.
+  function exportList() {
+    const on = online();
+    const head = ['Логин', 'Чей', 'Телефон', 'Состояние', 'Работает до', 'Осталось дней', 'Подключений сейчас', 'Подключений разрешено', 'Был на связи', 'Ровер', 'Заметка', 'Надёжность пароля'];
+    const rows = (s.list || []).map((r) => [r.login, r.staff ? 'оператор сети' : r.client, r.phone, STATE[r.state] ? STATE[r.state][0] : r.state, r.staff ? '' : day(r.ends_on).replace('—', ''),
+      r.days_left === null ? '' : r.days_left, on.get(r.login) || 0, r.max_sessions, r.last_seen_at ? day(r.last_seen_at) : '', r.device, r.note, r.weak ? WEAK[r.weak].toLowerCase() : 'в порядке']);
+    const tag = s.filter === 'all' ? '' : `-${(FILTERS.find((f) => f[0] === s.filter) || ['', s.filter])[1].replace(/\s+/g, '-')}`;
+    s.ctx.csv(`uralsurvey-dostupy${tag}-${s.data.today}.csv`, [head, ...rows]);
+    s.ctx.toast(`Выгружено логинов: ${rows.length}`);
+  }
+
   // ---------- Карточка логина ----------
 
   const field = (label, html, cls) => `<label class="field ${cls || ''}"><span>${label}</span>${html}</label>`;
@@ -115,7 +128,7 @@
       r.suspend_reason ? `приостановлен: ${esc(r.suspend_reason)}` : ''].filter(Boolean).join(' · ');
     const term = r.staff ? '' : `${field('Работает до', `<input name="ends_on" type="date" value="${r.ends_on || ''}" ${dis}>`)}
       ${admin ? `<div class="acc-plus">${[[30, '+1 мес'], [90, '+3 мес'], [182, '+6 мес'], [365, '+1 год']].map(([d, name]) => `<button class="adm-chip" type="button" data-acc-plus="${d}">${name}</button>`).join('')}</div>` : ''}`;
-    s.ctx.dialog.innerHTML = `<button class="icon-btn adm-close" type="button" data-acc="close" title="Закрыть">×</button>
+    s.ctx.dialog.innerHTML = `<button class="icon-btn adm-close" type="button" data-acc="close" title="Закрыть (Esc)">×</button>
       <form id="acc-form" novalidate>
       <h2 class="acc-title is-${tone(r)}"><b>${esc(r.login)}</b><span class="acc-pill">${STATE[r.state] ? STATE[r.state][0] : ''}</span></h2>
       <p class="hint">${facts}</p>
