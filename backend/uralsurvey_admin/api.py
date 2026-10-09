@@ -157,6 +157,7 @@ class App:
             # Доступы: логин, срок и подключения одним списком (модуль access)
             r("GET", r"/api/admin/access", lambda q: (200, access.access_list(store)), "operator"),
             r("POST", r"/api/admin/access/import", lambda q: (200, access.access_import(store, q.who, q.body.get("items"), str(q.body.get("source") or "NRS")[:40])), "admin"),
+            r("POST", r"/api/admin/access/bulk", lambda q: (200, access.access_bulk(store, q.who, q.body.get("ids"), q.body)), "admin"),
             r("POST", r"/api/admin/access/(\d+)", lambda q: (200, access.access_update(store, q.who, q.id, q.body)), "admin"),
             # Журналы
             r("GET", r"/api/admin/sessions", lambda q: (200, store.list_sessions(

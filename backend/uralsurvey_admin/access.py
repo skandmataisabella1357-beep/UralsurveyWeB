@@ -76,7 +76,7 @@ def access_list(store) -> dict:
     return {"today": today.isoformat(), "expiring_days": expiring, "counts": counts, "items": rows}
 
 
-def access_update(store, who: dict, login_id: int, data: dict) -> dict:
+def access_update(store, who: dict, login_id: int, data: dict, answer: bool = True) -> dict | None:
     """Правка доступа одним действием: срок, число подключений, включён ли логин, чей он."""
     with store.db.connection() as conn:
         row = conn.execute("SELECT * FROM ntrip_logins WHERE id = %s", (login_id,)).fetchone()
@@ -124,7 +124,30 @@ def access_update(store, who: dict, login_id: int, data: dict) -> dict:
     if "suspended" in data and sub is not None:
         store.suspend_subscription(who, sub["id"], bool(data["suspended"]), str(data.get("reason") or ""))
 
-    return next(r for r in access_list(store)["items"] if r["id"] == login_id)
+    return next(r for r in access_list(store)["items"] if r["id"] == login_id) if answer else None
+
+
+BULK_FIELDS = ("add_days", "ends_on", "suspended", "reason", "active", "max_sessions", "on_limit")
+
+
+def access_bulk(store, who: dict, ids, data: dict) -> dict:
+    """Одно действие над несколькими логинами. Каждый логин правится отдельно: если у одного не вышло
+    (например, у служебного нет срока), остальные всё равно меняются, а причина возвращается в ответе."""
+    if not isinstance(ids, list) or not ids or len(ids) > 2000 or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
+        raise Problem("Выберите логины: нужен список их номеров.")
+    change = {k: data[k] for k in BULK_FIELDS if k in data}
+    if not set(change) - {"reason"}:
+        raise Problem("Не сказано, что сделать с выбранными логинами.")
+    with store.db.connection() as conn:
+        names = {r["id"]: r["login"] for r in conn.execute("SELECT id, login FROM ntrip_logins WHERE id = ANY(%s)", (ids,)).fetchall()}
+    done, failed = 0, []
+    for login_id in dict.fromkeys(ids):
+        try:
+            access_update(store, who, login_id, change, answer=False)
+            done += 1
+        except Problem as exc:
+            failed.append({"login": names.get(login_id, f"№{login_id}"), "why": str(exc)})
+    return {"done": done, "failed": failed}
 
 
 def access_import(store, who: dict, items, source: str = "NRS") -> dict:

@@ -942,6 +942,21 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(a.call("POST", f"/api/admin/access/{old['id']}", {"suspended": False})[1]["state"], "active")
         self.assertEqual(a.call("POST", f"/api/admin/access/{old['id']}", {"active": False})[1]["state"], "off")
         self.assertEqual(a.call("POST", "/api/admin/access/999999", {"active": False})[0], 404)
+        # Одно действие над несколькими логинами: служебному срок не ставится, остальные продлеваются
+        staff = a.call("POST", "/api/admin/logins", {"login": "bulk-staff", "staff": True, "password": "staff-pass"})[1]
+        a.call("POST", f"/api/admin/access/{old['id']}", {"active": True})
+        before = {r["id"]: r for r in a.call("GET", "/api/admin/access")[1]["items"]}
+        status, res, _ = a.call("POST", "/api/admin/access/bulk", {"ids": [live["id"], old["id"], staff["id"], live["id"], 999999], "add_days": 10})
+        self.assertEqual(status, 200, res)
+        self.assertEqual((res["done"], sorted(x["login"] for x in res["failed"])), (2, ["bulk-staff", "№999999"]))
+        after = {r["id"]: r for r in a.call("GET", "/api/admin/access")[1]["items"]}
+        self.assertEqual([after[i]["days_left"] - before[i]["days_left"] for i in (live["id"], old["id"])], [10, 10])
+        res = a.call("POST", "/api/admin/access/bulk", {"ids": [live["id"], old["id"]], "active": False, "max_sessions": 3})[1]
+        self.assertEqual((res["done"], res["failed"]), (2, []))
+        after = {r["id"]: r for r in a.call("GET", "/api/admin/access")[1]["items"]}
+        self.assertEqual([(after[i]["state"], after[i]["max_sessions"]) for i in (live["id"], old["id"])], [("off", 3), ("off", 3)])
+        self.assertEqual(a.call("POST", "/api/admin/access/bulk", {"ids": [live["id"]]})[0], 400, "без действия")
+        self.assertEqual(a.call("POST", "/api/admin/access/bulk", {"ids": [], "active": True})[0], 400)
 
     def test_10_bruteforce(self):
         # Счётчик неудач общий на адрес и уже видел неверные пароли из прежних тестов:

@@ -18,7 +18,8 @@
   const COLS = [['login', 'Логин'], ['client', 'Чей'], ['state', 'Состояние'], ['ends', 'Работает до'], ['left', 'Осталось'], ['sessions', 'Подключений'], ['seen', 'Был на связи']];
   const WEAK = { same: 'Пароль совпадает с логином', short: 'Пароль короче 6 знаков' };
 
-  const s = { ctx: null, data: null, at: 0, busy: false, filter: 'all', search: '', sort: 'login', dir: 1, chips: '', body: '', open: null };
+  const s = { ctx: null, data: null, at: 0, busy: false, filter: 'all', search: '', sort: 'login', dir: 1, chips: '', body: '', open: null, sel: new Set(), bulk: '' };
+  const PLUS = [[30, '+1 мес'], [90, '+3 мес'], [182, '+6 мес'], [365, '+1 год']];
 
   const online = () => {
     const m = new Map();
@@ -49,10 +50,20 @@
     box.dataset.ready = '1';
     box.innerHTML = `<h2 class="ins-title adm-list-head"><span>Доступы</span><span class="adm-list-tools"><input class="adm-search" id="acc-search" type="search" placeholder="Логин, клиент, телефон"><span class="fig" id="acc-count"></span><button class="btn btn-quiet btn-small" type="button" id="acc-export" title="Список как на экране — с учётом фильтра и поиска">Выгрузить CSV</button></span></h2>
       <div class="acc-chips" id="acc-chips"></div>
+      <div class="acc-bulk" id="acc-bulk" hidden></div>
       <div class="adm-scroll"><table class="messages srv-table adm-rows acc-table"><thead><tr id="acc-head"></tr></thead><tbody id="acc-body"></tbody></table></div>`;
     box.addEventListener('input', (event) => { if (event.target.id === 'acc-search') { s.search = event.target.value.trim().toLowerCase(); draw(); } });
+    box.addEventListener('change', (event) => {
+      // Галочка в шапке отмечает всё, что сейчас в списке: с учётом фильтра и поиска
+      if (event.target.id === 'acc-all') { for (const r of s.list || []) { if (event.target.checked) s.sel.add(r.id); else s.sel.delete(r.id); } draw(); return; }
+      const pick = event.target.closest('[data-acc-pick]');
+      if (pick) { const id = Number(pick.dataset.accPick); if (pick.checked) s.sel.add(id); else s.sel.delete(id); draw(); }
+    });
     box.addEventListener('click', (event) => {
       if (event.target.id === 'acc-export') { exportList(); return; }
+      const mass = event.target.closest('[data-acc-bulk]');
+      if (mass) { bulk(mass.dataset.accBulk, mass.dataset.days); return; }
+      if (event.target.closest('.acc-pick, #acc-bulk')) return;
       const chip = event.target.closest('[data-acc-filter]');
       if (chip) { s.filter = chip.dataset.accFilter; draw(); return; }
       const th = event.target.closest('[data-acc-sort]');
@@ -67,7 +78,7 @@
   function draw() {
     frame();
     const box = s.ctx.box;
-    if (!s.data) { box.querySelector('#acc-body').innerHTML = '<tr><td colspan="7">Загружаем список…</td></tr>'; return; }
+    if (!s.data) { box.querySelector('#acc-body').innerHTML = '<tr><td colspan="8">Загружаем список…</td></tr>'; return; }
     const on = online();
     const all = s.data.items;
     const match = (r, f) => f === 'all' || (f === 'online' ? on.has(r.login) : (f === 'weak' ? Boolean(r.weak) : tone(r) === f));
@@ -86,28 +97,81 @@
       .sort((a, b) => { const x = key(a); const y = key(b); return (x < y ? -1 : x > y ? 1 : a.login.localeCompare(b.login)) * s.dir; });
     s.list = list;
     box.querySelector('#acc-count').textContent = list.length === all.length ? String(all.length) : `${list.length} из ${all.length}`;
-    box.querySelector('#acc-head').innerHTML = COLS.map(([id, name]) => `<th data-acc-sort="${id}" aria-sort="${s.sort === id ? (s.dir > 0 ? 'ascending' : 'descending') : 'none'}">${name}</th>`).join('');
+    const admin = s.ctx.admin;
+    // Выбор не переживает исчезнувшие логины
+    for (const id of s.sel) if (!all.some((r) => r.id === id)) s.sel.delete(id);
+    const picked = list.filter((r) => s.sel.has(r.id)).length;
+    box.querySelector('#acc-head').innerHTML = (admin ? `<th class="acc-pick"><input type="checkbox" id="acc-all" title="Отметить всё в списке" ${list.length && picked === list.length ? 'checked' : ''}></th>` : '') + COLS.map(([id, name]) => `<th data-acc-sort="${id}" aria-sort="${s.sort === id ? (s.dir > 0 ? 'ascending' : 'descending') : 'none'}">${name}</th>`).join('');
     const body = list.map((r) => {
       const t = tone(r);
       const now = on.get(r.login) || 0;
       const whose = r.staff ? 'оператор сети' : [r.client && r.client !== r.login ? r.client : '', r.phone].filter(Boolean).join(' · ');
-      return `<tr class="acc-row is-${t}" data-acc-id="${r.id}">
-        <td><span class="acc-login"><i class="acc-dot ${now ? 'is-on' : ''}" title="${now ? 'на связи' : 'не на связи'}"></i><b>${esc(r.login)}</b>${r.weak ? `<em class="acc-weak" title="${WEAK[r.weak]}">!</em>` : ''}</span></td>
+      return `<tr class="acc-row is-${t}" data-acc-id="${r.id}" aria-selected="${s.sel.has(r.id)}">
+        ${admin ? `<td class="acc-pick"><input type="checkbox" data-acc-pick="${r.id}" ${s.sel.has(r.id) ? 'checked' : ''} aria-label="Отметить ${esc(r.login)}"></td>` : ''}<td><span class="acc-login"><i class="acc-dot ${now ? 'is-on' : ''}" title="${now ? 'на связи' : 'не на связи'}"></i><b>${esc(r.login)}</b>${r.weak ? `<em class="acc-weak" title="${WEAK[r.weak]}">!</em>` : ''}</span></td>
         <td>${esc(whose || '—')}</td>
         <td><span class="acc-pill">${STATE[r.state] ? STATE[r.state][0] : esc(r.state)}</span></td>
         <td class="fig">${r.staff ? '—' : day(r.ends_on)}</td>
         <td class="fig acc-left">${r.staff ? '—' : left(r)}</td>
         <td class="fig">${now ? `<b class="acc-now">${now}</b>${NBSP}из${NBSP}` : ''}${r.max_sessions}</td>
         <td>${now ? '<span class="acc-now">сейчас</span>' : seen(r.last_seen_at)}</td></tr>`;
-    }).join('') || '<tr><td colspan="7">Никого не нашлось.</td></tr>';
+    }).join('') || '<tr><td colspan="8">Никого не нашлось.</td></tr>';
     if (body !== s.body) { s.body = body; box.querySelector('#acc-body').innerHTML = body; }
+    // Полоса действий над отмеченными: появляется, когда отмечен хотя бы один логин
+    const n = s.sel.size;
+    const act = (id, name, extra) => `<button class="adm-chip" type="button" data-acc-bulk="${id}" ${extra || ''}>${name}</button>`;
+    const bar = n ? `<span class="acc-bulk-n">Отмечено <b>${n}</b></span>${PLUS.map(([d, name]) => act('plus', name, `data-days="${d}"`)).join('')}
+      <input type="date" id="acc-bulk-date" title="Срок для отмеченных">${act('date', 'до этой даты')}<i class="acc-bulk-gap"></i>
+      ${act('limit', 'подключений…')}${act('suspend', 'приостановить')}${act('resume', 'возобновить')}${act('off', 'выключить')}${act('on', 'включить')}<i class="acc-bulk-gap"></i>${act('clear', 'снять отметки')}` : '';
+    const bulkBox = box.querySelector('#acc-bulk');
+    bulkBox.hidden = !n;
+    // Поле даты не перерисовывается, пока меняется только число отмеченных: введённая дата не пропадает
+    if (Boolean(n) !== Boolean(s.bulk)) { s.bulk = bar; bulkBox.innerHTML = bar; } else if (n) bulkBox.querySelector('.acc-bulk-n b').textContent = n;
+  }
+
+  // ---------- Действия над отмеченными ----------
+
+  async function bulk(kind, days) {
+    if (kind === 'clear') { s.sel.clear(); draw(); return; }
+    const ids = [...s.sel];
+    const n = ids.length;
+    const who = `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'логину' : 'логинам'}`;
+    let body = null;
+    let ask = '';
+    if (kind === 'plus') { body = { add_days: Number(days) }; ask = `Продлить ${who} на ${days} дн.? У истёкших срок считается от сегодняшнего дня.`; }
+    if (kind === 'date') {
+      const value = s.ctx.box.querySelector('#acc-bulk-date').value;
+      if (!value) { s.ctx.toast('Сначала выберите дату слева от кнопки'); return; }
+      body = { ends_on: value };
+      ask = `Поставить ${who} срок до ${day(value)}?`;
+    }
+    if (kind === 'limit') {
+      const value = Number(window.prompt(`Сколько одновременных подключений разрешить (${who})? От 1 до 100.`, '2'));
+      if (!Number.isInteger(value) || value < 1 || value > 100) return;
+      body = { max_sessions: value };
+    }
+    if (kind === 'suspend') {
+      const reason = window.prompt(`Почему приостанавливаем (${who})? Причина записывается в журнал.`);
+      if (!reason) return;
+      body = { suspended: true, reason };
+    }
+    if (kind === 'resume') { body = { suspended: false }; ask = `Возобновить доступ ${who}?`; }
+    if (kind === 'off') { body = { active: false }; ask = `Выключить ${n} ${n === 1 ? 'логин' : 'логинов'}? Открытые сеансы закроются.`; }
+    if (kind === 'on') { body = { active: true }; ask = `Включить ${n} ${n === 1 ? 'логин' : 'логинов'}?`; }
+    if (!body || (ask && !window.confirm(ask))) return;
+    const res = await s.ctx.api('/api/admin/access/bulk', 'POST', { ids, ...body });
+    if (!res.ok) { s.ctx.toast(res.error || 'Не получилось.'); return; }
+    const bad = res.data.failed;
+    s.ctx.toast(bad.length ? `Сделано: ${res.data.done}. Не вышло у ${bad.length}: ${bad.slice(0, 4).map((x) => x.login).join(', ')}${bad.length > 4 ? '…' : ''} — ${bad[0].why}` : `Сделано: ${res.data.done}`, bad.length ? 9000 : 3200);
+    s.sel.clear();
+    await load(true);
   }
 
   // Выгрузка: то, что сейчас в списке, — с учётом фильтра, поиска и порядка. Паролей в файле нет.
+  // Если что-то отмечено галочками, выгружаются только отмеченные.
   function exportList() {
     const on = online();
     const head = ['Логин', 'Чей', 'Телефон', 'Состояние', 'Работает до', 'Осталось дней', 'Подключений сейчас', 'Подключений разрешено', 'Был на связи', 'Ровер', 'Заметка', 'Надёжность пароля'];
-    const rows = (s.list || []).map((r) => [r.login, r.staff ? 'оператор сети' : r.client, r.phone, STATE[r.state] ? STATE[r.state][0] : r.state, r.staff ? '' : day(r.ends_on).replace('—', ''),
+    const rows = (s.list || []).filter((r) => !s.sel.size || s.sel.has(r.id)).map((r) => [r.login, r.staff ? 'оператор сети' : r.client, r.phone, STATE[r.state] ? STATE[r.state][0] : r.state, r.staff ? '' : day(r.ends_on).replace('—', ''),
       r.days_left === null ? '' : r.days_left, on.get(r.login) || 0, r.max_sessions, r.last_seen_at ? day(r.last_seen_at) : '', r.device, r.note, r.weak ? WEAK[r.weak].toLowerCase() : 'в порядке']);
     const tag = s.filter === 'all' ? '' : `-${(FILTERS.find((f) => f[0] === s.filter) || ['', s.filter])[1].replace(/\s+/g, '-')}`;
     s.ctx.csv(`uralsurvey-dostupy${tag}-${s.data.today}.csv`, [head, ...rows]);
