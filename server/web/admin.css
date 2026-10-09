@@ -678,3 +678,48 @@ i.adm-grade.is-fail { background: #ff5d7a; box-shadow: 0 0 7px 0 rgba(255, 93, 1
 /* Крестик есть у каждого всплывающего окна, всегда в правом верхнем углу */
 dialog.adm-dialog > .adm-close { position: absolute; top: 10px; right: 10px; z-index: 2; }
 dialog.adm-dialog > form > h2:first-child, dialog.adm-dialog > h2 { padding-right: 34px; }
+
+/* Блок «Точки доступа» в конструкторе сети: три короткие строки */
+.adm-pts { display: grid; gap: 4px; width: min(660px, 100%); }
+.adm-pt { display: grid; grid-template-columns: 130px minmax(140px, 240px) 30px 1fr; align-items: center; gap: 8px; font-size: 11.500px; }
+.adm-pt-kind { color: var(--muted); }
+.adm-pt input { height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--inset); color: var(--text); font-size: 12px; font-weight: 600; }
+.adm-pt input:focus { outline: none; border-color: #a890ff; }
+.adm-pt input::placeholder { color: var(--muted); font-weight: 400; }
+.adm-pt-names { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-pt-eye { width: 26px; height: 26px; color: var(--flow); }
+.adm-pt-eye svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.600; stroke-linecap: round; stroke-linejoin: round; }
+.adm-pt-eye[aria-pressed='false'] { color: var(--muted); }
+.adm-pt.is-hidden input, .adm-pt.is-hidden .adm-pt-names { text-decoration: line-through; text-decoration-color: var(--muted); opacity: 0.650; }
+.adm-pt.is-idle .adm-pt-kind { opacity: 0.650; }
+.adm-pt-why { color: var(--wait-text); font-size: 11px; }
+
+/* Сетка искажений NTv2p: остатки по станциям в сводке сети */
+.adm-grid-list { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 4px; }
+.adm-grid-st { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 9px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--mag); font-size: 11.500px; font-variant-numeric: tabular-nums; cursor: help; }
+.adm-grid-st b { font-weight: 600; }
+.adm-grid-st small { color: var(--muted); font-size: 10.500px; }
+
+/* Сетка искажений NTv2p на карте: слабая подсветка там, где есть сдвиг, тонкие стрелки с бегущей искрой, подписи у станций */
+.adm-ntv-heat { filter: blur(12px); opacity: 0.9; }
+.adm-ntv-trail { stroke-linecap: round; stroke-linejoin: round; }
+.adm-ntv-flow { stroke-linecap: round; stroke-dasharray: 2 26; animation: adm-ntv-run 2.6s linear infinite; }
+.adm-ntv-flow.is-slow { animation-duration: 4s; }
+.adm-ntv-st { position: absolute; display: block; width: 0; height: 0; pointer-events: none; }
+.adm-ntv-st::before { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 1.500px rgba(11, 16, 32, 0.85); }
+.adm-ntv-st i { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--c); opacity: 0; animation: adm-ntv-ring var(--d) ease-out infinite; }
+.adm-ntv-st b { position: absolute; left: 11px; top: -17px; font: 600 11px/1 ui-monospace, Consolas, monospace; color: #f2f4ff; white-space: nowrap; text-shadow: 0 0 2px #060a18, 0 0 5px #060a18; }
+.adm-ntv-st em { position: absolute; left: 11px; top: -4px; font: 500 10.500px/1 ui-monospace, Consolas, monospace; font-style: normal; color: var(--c); white-space: nowrap; text-shadow: 0 0 2px #060a18, 0 0 5px #060a18; }
+@keyframes adm-ntv-run { to { stroke-dashoffset: -28; } }
+@keyframes adm-ntv-ring { 0% { transform: scale(0.5); opacity: 0.7; } 100% { transform: scale(2.2); opacity: 0; } }
+:root[data-theme='light'] .adm-ntv-heat { opacity: 0.7; }
+:root[data-theme='light'] .adm-ntv-flow { stroke: #2a2a5a; }
+:root[data-theme='light'] .adm-ntv-st b { color: #14143c; text-shadow: 0 0 2px #fff, 0 0 5px #fff; }
+:root[data-theme='light'] .adm-ntv-st em { text-shadow: 0 0 2px #fff, 0 0 5px #fff; filter: brightness(0.62); }
+@media (prefers-reduced-motion: reduce) { .adm-ntv-flow, .adm-ntv-st i { animation: none; } }
+
+/* Опорные станции сетки: по ним посчитаны семь параметров */
+.adm-grid-st.is-anchor { border-style: dashed; }
+.adm-grid-st.is-anchor b::before { content: '◆ '; color: var(--mag); font-size: 9px; }
+.adm-ntv-st.is-anchor::before { border-radius: 1.500px; transform: rotate(45deg); box-shadow: 0 0 0 1.500px #f2f4ff; }
+.adm-ntv-st.is-anchor i { border-radius: 3px; border-style: dashed; }

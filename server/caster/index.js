@@ -152,6 +152,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const port = Number.isInteger(a.port) && a.port > 0 ? a.port : null;
       const lobby = old && old.lobby.port === port ? old.lobby
         : { name: a.name, lobby: true, feed: idleFeed(), stationId: null, position: null, positionFrame: null, transform: null, port, listed: true, enabled: true, access: null, sessions: new Set() };
+      lobby.listed = a.listed !== false; // скрытая точка работает, но в таблице источников её нет
       if (old && old.lobby !== lobby) for (const session of [...sessions]) if (session.auto === old) close(session, 'точка подключения переведена на другой порт');
       const auto = { name: a.name, points: a.points.filter((n) => typeof n === 'string'), port, lobby };
       for (const session of sessions) if (session.auto === old) session.auto = auto;
@@ -179,6 +180,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const lobby = old && old.lobby.port === port ? old.lobby
         : { name: v.name, lobby: true, feed: idleFeed(), stationId: null, position: null, positionFrame: null, transform: null, port, listed: true, enabled: true, access: null, sessions: new Set() };
       lobby.transform = transformOf(v.transform);
+      lobby.listed = v.listed !== false;
       if (old && old.lobby !== lobby) for (const session of [...sessions]) if (session.virtual === old) close(session, 'точка подключения переведена на другой порт');
       const item = { name: v.name, port, lobby };
       for (const session of sessions) if (session.virtual === old) session.virtual = item;
@@ -353,7 +355,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       const plan = transform.plan({ ...t, target: t.target || t.system || 'msk66' });
       if (!plan) return null;
       const frames = new Map(plan.projections.map((z) => [z.zone, Buffer.concat([rtcm.encodeHelmert({ ...plan.helmert, systemId: z.systemId }), rtcm.encodeProjection(z)])]));
-      return { plan, frames };
+      return { plan, frames, grids: new Map() };
     } catch (err) {
       log(`раздача: сообщения пересчёта не собраны — ${err.message}`);
       return null;
@@ -366,8 +368,23 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     if (!t) return;
     const lon = session.gga ? session.gga.lon : session.point.feed.lon;
     const zone = Number.isFinite(lon) ? transform.zoneFor(t.plan, lon) : t.plan.projections[0];
-    const plain = t.frames.get(zone.zone);
+    let plain = t.frames.get(zone.zone);
     session.zone = zone.zone;
+    // Сетка искажений (сообщение 1023): 16 узлов вокруг ровера. Пока ровер не сообщил положение,
+    // сетка ему не идёт — он остаётся на семи параметрах.
+    if (t.plan.grid && session.gga && Number.isFinite(session.gga.lat)) {
+      try {
+        const win = transform.gridWindow(t.plan.grid, session.gga.lat, session.gga.lon);
+        const key = `${zone.zone}:${win.key}`;
+        let grid = t.grids.get(key);
+        if (!grid) {
+          if (t.grids.size > 4000) t.grids.clear();
+          grid = rtcm.encodeResiduals({ ...win, systemId: zone.systemId, mjd: Math.floor(Date.now() / 86400000) + 40587 });
+          t.grids.set(key, grid);
+        }
+        plain = Buffer.concat([plain, grid]);
+      } catch (err) { /* сетка не собралась — ровер остаётся на семи параметрах */ }
+    }
     send(session, plain, session.version === 2 ? ntrip.chunk(plain) : null);
   }
 
@@ -513,7 +530,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
       });
     }
     for (const auto of autos.values()) {
-      const live = onPort(auto.lobby, port) ? candidates(auto, now) : [];
+      const live = auto.lobby.listed && onPort(auto.lobby, port) ? candidates(auto, now) : [];
       if (!live.length) continue;
       const feed = live[0].feed;
       list.push({
@@ -524,7 +541,7 @@ async function start({ config, secrets = {}, log = console.log, rules = {}, dire
     }
     if (vrs.connected) {
       for (const v of virtuals.values()) {
-        if (!onPort(v.lobby, port)) continue;
+        if (!v.lobby.listed || !onPort(v.lobby, port)) continue;
         list.push({ name: v.name, city: 'Virtual base', needsGga: true, receiver: 'URALSURVEY VRS', lat: 0, lon: 0, bitrate: 6000,
           messages: [{ type: 1006, period: 5 }, { type: 1008, period: 10 }, { type: 1033, period: 10 }, { type: 1074, period: 1 }, { type: 1094, period: 1 }, { type: 1124, period: 1 }] });
       }

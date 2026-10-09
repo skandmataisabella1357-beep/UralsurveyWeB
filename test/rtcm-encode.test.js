@@ -177,3 +177,42 @@ test('набор служебных сообщений: собирается о�
   assert.deepEqual(m.decodePosition(payloadOf(moved.position)).ecef, [1499264.8225, 3031597.7404, 5389560.6973]);
   assert.throws(() => mirror(1, payloads.slice(1)), /нет координат/);
 });
+
+test('1023: сетка искажений NTv2p — окно из 16 узлов собирается, кодируется и читается обратно', () => {
+  const transform = require('../modules/transform/transform');
+  const grid = { name: 'NTv2p', stations: [
+    { code: 'A', lat: 56.8, lon: 60.6, e: 0.02, n: -0.01, u: 0.03 }, { code: 'B', lat: 56.4, lon: 61.9, e: -0.36, n: 0.43, u: 0.96 },
+    { code: 'C', lat: 57.5, lon: 60.3, e: 1.28, n: -0.25, u: -0.59 }, { code: 'D', lat: 56.6, lon: 57.8, e: 0.85, n: -0.75, u: 0.12 }] };
+  // На станции — её остаток; между станциями — между их остатками; далеко от сети значение конечно
+  assert.deepStrictEqual(transform.residualAt(grid, 56.8, 60.6), { e: 0.02, n: -0.01, u: 0.03 });
+  const mid = transform.residualAt(grid, 56.6, 61.25); // середина между A и B
+  assert.ok(mid.e < 0.02 && mid.e > -0.36 && mid.n > -0.01 && mid.n < 0.43, JSON.stringify(mid));
+  const far = transform.residualAt(grid, 70, 100);
+  assert.ok(Object.values(far).every(Number.isFinite) && Math.abs(far.e) < 1.28);
+  // Окно: ровер в средней клетке, узлы строками с юга на север
+  const win = transform.gridWindow(grid, 56.83, 60.61);
+  assert.strictEqual(win.nodes.length, 16);
+  assert.ok(win.lat0 < 56.83 - 300 / 3600 && win.lat0 + 2 * 300 / 3600 > 56.83 && win.lon0 + 600 / 3600 <= 60.61 && win.lon0 + 2 * 600 / 3600 > 60.61, JSON.stringify([win.lat0, win.lon0]));
+  assert.strictEqual(win.clipped, 0);
+  // Среднее плюс отклонение узла возвращают остаток в узле с точностью полей сообщения
+  const node = { lat: win.lat0 + 300 / 3600, lon: win.lon0 + 600 / 3600 };
+  const want = transform.residualAt(grid, node.lat, node.lon);
+  const arc = transform.toArc(node.lat, want.e, want.n);
+  const body = m.encodeResiduals({ ...win, systemId: 1, mjd: 61323 });
+  assert.strictEqual(body.length, 3 + Math.ceil(578 / 8) + 3);
+  const got = m.decodeResiduals(body.subarray(3, body.length - 3));
+  assert.deepStrictEqual([got.type, got.systemId, got.horizontal, got.vertical, got.dLat, got.dLon, got.mjd], [1023, 1, true, true, 300, 600, 61323]);
+  assert.ok(Math.abs(got.lat0 - win.lat0) < 1e-4 && Math.abs(got.lon0 - win.lon0) < 1e-4);
+  assert.ok(Math.abs(got.meanLat + got.nodes[5].dLat - arc.dLat) < 0.00004 && Math.abs(got.meanLon + got.nodes[5].dLon - arc.dLon) < 0.00004, JSON.stringify([got.meanLat, got.nodes[5], arc]));
+  assert.ok(Math.abs(got.meanH + got.nodes[5].dH - want.u) < 0.0011);
+  // Резкий перепад рядом с выбивающейся станцией не переполняет поле: узлы обрезаются до предела
+  const steep = transform.gridWindow({ stations: [{ code: 'A', lat: 56.8, lon: 60.6, e: 0, n: 0, u: 0 }, { code: 'B', lat: 56.85, lon: 60.7, e: 3, n: 3, u: 3 }, { code: 'C', lat: 57.5, lon: 60.3, e: 0, n: 0, u: 0 }] }, 56.83, 60.65);
+  assert.ok(steep.clipped > 0);
+  assert.doesNotThrow(() => m.encodeResiduals({ ...steep, systemId: 1, mjd: 1 }));
+  // План пересчёта объявляет в 1021, что вместе с ним идёт и 1023; для ГСК-2011 сетки нет
+  const plan = transform.plan({ target: 'msk66', link: { tx: 1, ty: 1, tz: 1, rx: 0, ry: 0, rz: 0, m: 0 }, grid });
+  assert.strictEqual(plan.helmert.utilized, transform.UTILIZED_1025 | transform.UTILIZED_1023);
+  assert.strictEqual(plan.grid, grid);
+  assert.strictEqual(transform.plan({ target: 'gsk2011', epoch: 2026.7, grid }).grid, null);
+  assert.strictEqual(transform.plan({ target: 'msk66', link: { tx: 1, ty: 1, tz: 1, rx: 0, ry: 0, rz: 0, m: 0 } }).helmert.utilized, transform.UTILIZED_1025);
+});

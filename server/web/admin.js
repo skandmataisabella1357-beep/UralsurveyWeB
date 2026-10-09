@@ -573,6 +573,7 @@
     // Карта — фон экрана; разделы без карты открываются панелью поверх неё
     $('main').hidden = Boolean(v.map);
     renderMap();
+    drawGridMap(); // сетка искажений NTv2p — по значку внизу ленты
     // В разделах сети по центру только карта: списки станций и расчётных модулей — в каталоге слева
     $('list-box').hidden = view === 'overview' || Boolean(v.map);
     $('sub-box').hidden = true;
@@ -656,7 +657,7 @@
   // ---------- Отображение: что показывать на карте ----------
   // Настройки запоминаются в браузере администратора.
 
-  const SHOW = { base: 'osm', labels: true, grid: true, regions: true, msk: false, sk42: false, gsk: false, fix: false, float: false, over: false, contours: true, vectors: true, vrs: true, rovers: true };
+  const SHOW = { base: 'osm', labels: true, grid: true, regions: true, msk: false, sk42: false, gsk: false, fix: false, float: false, over: false, contours: true, vectors: true, vrs: true, rovers: true, ntv: true };
   try { Object.assign(SHOW, JSON.parse(localStorage.getItem('admin-display') || '{}')); } catch (err) { /* настройки по умолчанию */ }
   // Подложки карты. Все открытые, без ключей; filter — как подложка перекрашивается под тёмную тему
   const BASES = {
@@ -690,6 +691,7 @@
     ['radii', 'Зоны покрытия', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.500"/><circle cx="12" cy="12" r="9.500" stroke-dasharray="2 3"/>'],
     ['contours', 'Контуры расчётных модулей', '<path d="M5 8 13 4l6 6-3 9-9-2Z" stroke-dasharray="3 3"/>'],
     ['vectors', 'Векторы расчёта', '<path d="M5 18 12 6l7 12Z"/><circle cx="5" cy="18" r="1.500"/><circle cx="12" cy="6" r="1.500"/><circle cx="19" cy="18" r="1.500"/>'],
+    ['ntv', 'Сетка искажений NTv2p', '<path d="M3 8c3-2.500 6 2.500 9 0s6 2.500 9 0M3 13c3-2.500 6 2.500 9 0s6 2.500 9 0M3 18c3-2.500 6 2.500 9 0s6 2.500 9 0"/><path d="m16.500 3 2.500 2.500-2.500 2.500"/>'],
     ['vrs', 'Стороны сети VRS', '<circle cx="12" cy="12" r="8.500" stroke-dasharray="2.600 2.600"/><path d="M12 7v6M9.500 13h5M8.500 18l3.500-5 3.500 5"/><circle cx="12" cy="7" r="1.100"/>'],
     ['rovers', 'Роверы на связи', '<circle cx="12" cy="9" r="3"/><path d="M12 12v9M8 21h8"/>'],
   ];
@@ -710,6 +712,7 @@
     regions: 'Границы всех регионов России — светящимся контуром, с названиями.',
     contours: 'Границы расчётных модулей пунктиром с их именами. Контур, который сейчас правят или обводят, виден всегда.',
     vrs: 'Стороны сети виртуальных баз у выбранной сети раздачи: зелёная — готова, жёлтая — набирает спутники, красная — не готова, светлый пунктир — не считается (длиннее предела). Ореол станции — самопроверка, кольцо с лучами — виртуальная база ровера.',
+    ntv: 'Сетка искажений NTv2p: куда и на сколько координаты основной сети отстоят от ITRF после семи параметров. Стрелки стоят там, где сдвиг больше 5 см; чем он больше, тем длиннее стрелка и теплее цвет. У станций — остаток в плане и по высоте, см; ромб — опорная станция. Слой виден в сети раздачи, которая вещает NTv2p, и в расчётном модуле на шаге «Привязка»; в основной сети сетки нет. Считается в расчётном модуле, шаг «Привязка».',
     vectors: 'Векторы последнего расчёта расчётного модуля: цвет от красного (метр и хуже) к зелёному (5 мм и лучше).',
     rovers: 'Роверы, которые сейчас подключены и передают своё положение: зелёный — фиксированное решение, жёлтый — плавающее, голубой — дифференциальное, розовый — автономное.',
   };
@@ -1398,15 +1401,15 @@
         const chips = `<div class="adm-card-pick">${CARD_SYSTEMS.map(([id, name]) => `<button class="adm-chip" type="button" data-card-sys="${id}" aria-current="${id === sys.id}">${name}</button>`).join('')}</div>
           <div class="adm-card-pick">${[['ell', 'над эллипсоидом'], ['egm2008', 'по геоиду Russia2008']].map(([id, name]) => `<button class="adm-chip" type="button" data-card-h="${id}" aria-current="${id === card.height}">${name}</button>`).join('')}</div>`;
         const d = set.rough ? 0 : 3;
-        const at = toFrame(set.v, set.frame, sys.frame, set.link);
+        const at = toFrame(set.v, set.frame, sys.frame, set.link, set.epoch);
         const p = at ? inSystem(sys, at, set.epoch) : null;
         let rowsHtml = '';
         let side = '';
         let note = '';
         if (!p) {
-          note = `Для системы «${sys.name}» нужны ${sys.frame === 'itrf' ? 'настоящие координаты ITRF2014' : 'координаты в системе основной сети'}, а этот набор — ${set.frame === 'itrf' ? 'ITRF2014' : 'смещённый'}. Перейти от одних к другим можно только привязкой расчётного модуля, а её у станции пока нет.`;
+          note = `Для системы «${sys.name}» нужны ${sys.frame === 'itrf' ? 'настоящие координаты ITRF2014' : 'координаты в системе основной сети'}, а этот набор — ${set.frame === 'itrf' ? 'ITRF2014' : (set.frame === 'gsk' ? 'в ГСК-2011' : 'смещённый')}. Перейти от одних к другим можно только привязкой расчётного модуля, а её у станции пока нет.`;
         } else {
-          const real = toFrame(set.v, set.frame, 'itrf', set.link) || set.v;
+          const real = toFrame(set.v, set.frame, 'itrf', set.link, set.epoch) || set.v;
           const g = window.CoordSys.toGeodetic(geoid ? real : at, WGS);
           const n = geoid && exp.geoid ? exp.geoid.undulation(g.lat * 180 / Math.PI, g.lon * 180 / Math.PI) : null;
           const hEll = p.h !== undefined ? p.h : g.h;
@@ -1422,7 +1425,8 @@
             if (p.loose) note += '<b>Параметры этой зоны с каталогом не сверены</b>: расхождение с каталожными координатами возможно. ';
           }
           if (sys.epoch) note += 'ГСК-2011 закреплена на эпоху 2011,0: координаты перенесены на неё по модели движения Евразийской плиты, точность 2–3 см. ';
-          if (set.frame !== sys.frame) note += `Пересчитано привязкой расчётного модуля (${set.frame === 'itrf' ? 'ITRF2014 → основная сеть' : 'основная сеть → ITRF2014'}). `;
+          if (set.frame === 'gsk') note += 'Набор в ГСК-2011: для других систем он возвращён в ITRF2014 обратным переносом эпохи. ';
+          else if (set.frame !== sys.frame) note += `Пересчитано привязкой расчётного модуля (${set.frame === 'itrf' ? 'ITRF2014 → основная сеть' : 'основная сеть → ITRF2014'}). `;
           if (geoid && n !== null && set.frame === 'net1' && !set.link) note += 'Высота над эллипсоидом взята от смещённых координат: привязки нет, расхождение около 0,2 м. ';
           if (geoid) note += 'Геоид Russia2008 (EGM2008) — тот же файл, что в TBC. ';
         }
@@ -1760,6 +1764,7 @@
 
   // Живая часть: состояние расчёта и таблица. Обновляется сама, поля ввода при этом не трогаются.
   function subLive() {
+    drawGridMap();
     const row = subRow();
     const body = $('sub-rows');
     if (!row || !body) return;
@@ -2047,6 +2052,7 @@
   // Окно шага закрыто: несохранённая правка отбрасывается. Обводка контура — исключение:
   // окно на это время убирается, чтобы открыть карту, и черновик остаётся.
   $('sub-dialog').addEventListener('close', () => {
+    drawGridMap();
     if (!sub.drawing) { sub.draft = null; sub.draftFor = undefined; if (sub.fresh) sub.fresh = false; }
     render();
   });
@@ -2181,10 +2187,17 @@
 
   // Привязка расчётного модуля в записи модуля пересчёта и обратный ход (углы малы: достаточно одного шага)
   const linkOf = (p) => ({ dx: p.tx, dy: p.ty, dz: p.tz, rx: p.rx, ry: p.ry, rz: p.rz, scale: p.m });
-  function toFrame(xyz, from, to, link) {
+  // year — эпоха координат: нужна набору в ГСК-2011, чтобы вернуть его в ITRF2014 на свою эпоху
+  function toFrame(xyz, from, to, link, year) {
     if (from === to) return xyz;
-    // Координаты, уже перенесённые в ГСК-2011, обратно в ITRF здесь не возвращаются
-    if (from === 'gsk' || to === 'gsk') return null;
+    if (to === 'gsk') return null;
+    // Набор в ГСК-2011 (сеть, выпущенная в ней) сначала возвращается в ITRF2014: это обратный ход
+    // того же переноса эпохи. Поправка мала, одного шага хватает с запасом — ошибка меньше микрона.
+    if (from === 'gsk') {
+      const there = toGsk2011(xyz, year || yearNow());
+      const back = xyz.map((v, i) => v - (there[i] - v));
+      return to === 'itrf' ? back : toFrame(back, 'itrf', to, link, year);
+    }
     if (!link || !window.Transform) return null;
     const L = linkOf(link);
     if (to === 'net1') return window.Transform.apply(L, xyz);
@@ -2226,13 +2239,13 @@
     const notes = [];
     const rows = [];
     for (const pt of src.points) {
-      const at = toFrame(pt.xyz, src.frame, sys.frame, src.link);
+      const at = toFrame(pt.xyz, src.frame, sys.frame, src.link, pt.epoch);
       if (!at) continue;
       const xyz = sys.to2020 ? to2020(at, pt.epoch || yearNow()) : at;
       const p = inSystem(sys, xyz, pt.epoch);
       if (!p) continue;
       // Высота: над эллипсоидом — в той же рамке, что координаты; по геоиду — всегда от настоящей высоты ITRF
-      const real = toFrame(pt.xyz, src.frame, 'itrf', src.link) || pt.xyz;
+      const real = toFrame(pt.xyz, src.frame, 'itrf', src.link, pt.epoch) || pt.xyz;
       const g = window.CoordSys.toGeodetic(geoid ? real : xyz, WGS);
       let h = p.h !== undefined && !geoid ? p.h : g.h;
       if (geoid) {
@@ -2357,12 +2370,18 @@
     ['stations', 'Станции', '<path d="M12 4 20 19H4Z"/><circle cx="12" cy="14.500" r="1.400"/>'],
     ['coords', 'Координаты базы', '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 2.500 3 13.500 0 16M12 4c-3 2.500-3 13.500 0 16"/>'],
     ['transform', 'Пересчёт в потоке', '<path d="M4 8h11l-3-3M20 16H9l3 3"/><circle cx="18.500" cy="8" r="1.500"/><circle cx="5.500" cy="16" r="1.500"/>'],
+    ['grid', 'NTv2p', '<path d="M4 8c3-2 5 2 8 0s5 2 8 0M4 13c3-2 5 2 8 0s5 2 8 0M4 18c3-2 5 2 8 0s5 2 8 0"/><path d="M8 5v15M16 5v15" stroke-dasharray="1.500 2.500"/>'],
     ['systems', 'Спутники', '<path d="m7 10 3-3 7 7-3 3ZM5 12l-2 2 3 3 2-2M17 5l2-2 3 3-2 2M14 17a4 4 0 0 0 4 4M14 20.500a1 1 0 0 0 1 1"/>'],
     ['rate', 'Частота', '<circle cx="12" cy="13" r="7.500"/><path d="M12 13V8.500M12 13l3 2M9.500 3h5"/>'],
     ['near', 'Ближайшая база', '<path d="M12 21s6-5.500 6-10.500a6 6 0 0 0-12 0C6 15.500 12 21 12 21Z"/><circle cx="12" cy="10.500" r="2.200"/>'],
     ['vrs', 'Виртуальная база', '<circle cx="12" cy="12" r="8.500" stroke-dasharray="2.600 2.600"/><path d="M12 7v6M9.500 13h5M8.500 18l3.500-5 3.500 5"/><circle cx="12" cy="7" r="1.100"/>'],
+    ['points', 'Точки доступа', '<path d="M5 6.500h14M5 12h14M5 17.500h9"/><circle cx="18.500" cy="17.500" r="1.600"/>'],
     ['port', 'Порт', '<rect x="4" y="6" width="16" height="12" rx="2.500"/><path d="M8 10v4M12 10v4M16 10v4"/>'],
   ];
+  // Точки доступа сети в рецепте: свои имена у виртуальной и ближайшей базы, видимость в списке у ровера
+  const netPoints = (r) => { const p = r.points || {}; return { vrs: { name: '', listed: true, ...p.vrs }, near: { name: '', listed: true, ...p.near }, stations: { listed: true, ...p.stations } }; };
+  const EYE = { true: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.600-6.500 10-6.500S22 12 22 12s-3.600 6.500-10 6.500S2 12 2 12Z"/><circle cx="12" cy="12" r="2.800"/></svg>',
+    false: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l16 16M9.900 5.800A10.500 10.500 0 0 1 12 5.500c6.400 0 10 6.500 10 6.500a17 17 0 0 1-3.300 3.900M6.200 7.800A16.600 16.600 0 0 0 2 12s3.600 6.500 10 6.500a10 10 0 0 0 3.800-.800"/></svg>' };
   const ROVER_ICON = '<path d="M12 3v9M8.500 12h7M7 21l5-9 5 9"/><circle cx="12" cy="3.500" r="1.200"/>';
   const recipeOf = (n) => (n.recipe && n.recipe.coords ? { source: 'subnet', ...n.recipe } : { source: 'subnet', coords: n.kind === 'local' ? 'net1' : 'itrf2014', transform: n.kind === 'itrf_msk' ? 'msk66' : 'none', stations: null, systems: ['G', 'R', 'E', 'C'], rate: 1, near: true });
   const netLabel = (r) => `${COORDS[r.coords]}${r.transform !== 'none' ? ` → ${FLOWS[r.transform].replace('в ', '')}` : ''}`;
@@ -2725,6 +2744,19 @@
         ['эллипсоид ITRF: a, b', `${fx(h.sourceA, 3)} · ${fx(h.sourceB, 3)}`], [`${t.target === 'gsk2011' ? 'ГСК-2011' : 'Красовского'}: a, b`, `${fx(h.targetA, 3)} · ${fx(h.targetB, 3)}`]]));
       rowsHtml.push(`<p class="adm-what-row"><b>${flow ? '1025 · проекция' : 'Проекция (справочно)'}</b> ${esc(t.system)}, поперечная Меркатора (Гаусса — Крюгера)${flow ? '; роверу уходит зона по его положению' : ''}</p>`);
       rowsHtml.push(`<div class="adm-scroll"><table class="messages srv-table adm-rows adm-static adm-zones"><thead><tr><th>Зона</th><th>Осевой меридиан</th><th>Широта начала</th><th>Масштаб</th><th>Смещение на восток, м</th><th>Смещение на север, м</th><th></th></tr></thead><tbody>${t.projections.map((z) => `<tr><td class="fig">${z.zone}</td><td class="fig">${dms(z.lon0, 'lon', 0).text}</td><td class="fig">0°</td><td class="fig">${fx(z.scale, 6)}</td><td class="fig">${fx(z.falseEasting, 3)}</td><td class="fig">${fx(z.falseNorthing, 3)}</td><td>${z.verified ? '' : '<span class="is-wait">с каталогом не сверена</span>'}</td></tr>`).join('')}</tbody></table></div>`);
+      if (flow && t.grid) {
+        // Сетка искажений: остатки на станциях, по которым она построена
+        const cm = (v) => `${v > 0 ? '+' : ''}${fx(v * 100, 1)}`;
+        const anchors = new Set(plan.used || []);
+        const list = [...t.grid.stations].map((s) => ({ ...s, plan: Math.hypot(s.e, s.n), used: s.used !== undefined ? s.used : anchors.has(s.code) })).sort((x, y) => y.plan - x.plan);
+        const base = list.filter((s) => s.used);
+        const moved = list.filter((s) => !s.used);
+        const chip = (s) => `<span class="adm-grid-st ${s.used ? 'is-anchor' : ''}" style="--mag:${gridColor(s.plan)}" title="к востоку ${cm(s.e)} см, к северу ${cm(s.n)} см, по высоте ${cm(s.u)} см"><b class="fig">${esc(s.code)}</b>${fx(s.plan * 100, s.plan < 0.1 ? 1 : 0)}<small>${cm(s.u)}</small></span>`;
+        rowsHtml.push(`<p class="adm-what-row"><b>1023 · сетка искажений ${esc(t.grid.name || 'NTv2p')}</b> тестовая. Посчитана в расчётном модуле ${esc(plan.subnet || '')}, шаг «Привязка». Ровер получает 16 узлов вокруг себя, шаг 5′ × 10′.</p>`);
+        rowsHtml.push(`<p class="adm-what-row"><b>Опорные · ${base.length}</b> по ним посчитаны семь параметров (${plan.mode === 'full' ? 'все семь' : 'только сдвиг'}); остаток у них почти нулевой — сетка здесь ничего не двигает</p><div class="adm-grid-list">${base.map(chip).join('') || '<span class="hint">в записи выпуска не отмечены</span>'}</div>`);
+        rowsHtml.push(`<p class="adm-what-row"><b>Поправляются сеткой · ${moved.length}</b> в расчёте параметров не участвовали; остаток — на сколько их координаты в основной сети отстоят от опорных${moved.length ? `: от ${fx(moved[moved.length - 1].plan * 100, 0)} до ${fx(moved[0].plan * 100, 0)} см в плане` : ''}</p><div class="adm-grid-list">${moved.map(chip).join('')}</div>`);
+        rowsHtml.push('<p class="hint">Цифры у станции — остаток в плане и по высоте, см. Опорные выбираются галочками в расчётном модуле на шаге «Привязка»: поменяете набор — изменится и сетка. Остатки показаны и на карте: цвет и стрелка — куда и на сколько сетка сдвигает координаты. В них сидят и перекосы старой сети, и ошибки координат отдельных станций; разделить их можно только по пунктам ГГС. Порядок узлов в сообщении на живом ровере не проверен.</p>');
+      }
       if (flow) {
         const a = h.area;
         rowsHtml.push(`<p class="adm-what-row"><b>Как передаётся</b> пара 1021 + 1025 при подключении и каждые 10 с. Область действия: ${fx(a.lat - a.dLat, 1)}–${fx(a.lat + a.dLat, 1)}° с. ш., ${fx(a.lon - a.dLon, 1)}–${fx(a.lon + a.dLon, 1)}° в. д. В ровере включается «система координат из сети». Знак поворотов и признак набора сообщений на живом приёмнике ещё не проверены.</p>`);
@@ -2787,6 +2819,7 @@
     }
     const codes = draftCodes();
     if (r.stations) { r.stations = r.stations.filter((c) => codes.includes(c)); if (!r.stations.length) r.stations = null; }
+    if (!usesIgd(r) && r.grid && r.grid !== 'none') r.grid = 'none'; // сетка искажений без пересчёта в МСК не нужна
     // Сеть одной области называется по её номеру и системе координат: 66MSK, 74GSK, 66ITRF.
     // С имени начинаются точки для роверов — 66MSK_NEAR, 66MSK_VRS, — так по имени видно, что это за сеть.
     // Предлагается, пока администратор не вписал своё; занятое имя не предлагается.
@@ -2813,9 +2846,16 @@
     if (id === 'stations') return r.stations ? `${r.stations.length} из ${all}` : `все ${all}`;
     if (id === 'coords') return COORDS[r.coords];
     if (id === 'transform') return `${FLOWS[r.transform]}${usesIgd(r) ? ` · ${IGD[r.igd || 'g2008'].replace(/^ГОСТ (Р )?[\d]+-/, '')}` : ''}`;
+    if (id === 'grid') return r.grid === 'stations' ? 'есть' : 'нет';
     if (id === 'systems') return r.systems.length === 4 ? 'все четыре' : r.systems.map((c) => SYSTEMS[c]).join(', ');
     if (id === 'rate') return r.rate > 1 ? `раз в ${r.rate} с` : 'каждую секунду';
     if (id === 'near') return r.near ? 'есть' : 'нет';
+    if (id === 'points') {
+      const p = netPoints(r);
+      const prefix = (d.name || 'ИМЯ').toUpperCase();
+      const seen = [n && n.recipe && n.recipe.vrs && p.vrs.listed ? p.vrs.name || `${prefix}_VRS` : '', r.near && p.near.listed ? p.near.name || `${prefix}_NEAR` : '', p.stations.listed ? `станции ${r.stations ? r.stations.length : all}` : ''].filter(Boolean);
+      return seen.length ? esc(seen.join(' · ')) : 'все скрыты';
+    }
     if (id === 'vrs') return n ? (n.recipe && n.recipe.vrs ? 'есть' : 'нет') : 'после выпуска';
     return String(d.port || '2101');
   }
@@ -2824,6 +2864,8 @@
     if (id === 'coords') return r.coords === 'net1' ? 'local' : (r.coords === 'gsk2011' ? 'gsk' : 'itrf');
     if (id === 'transform') return r.transform === 'none' ? 'off' : 'itrf_msk';
     if (id === 'near') return r.near ? 'plain' : 'off';
+    if (id === 'grid') return r.grid === 'stations' ? 'gsk' : 'off';
+    if (id === 'points') { const p = netPoints(r); return p.vrs.listed || p.near.listed || p.stations.listed ? 'plain' : 'off'; }
     if (id === 'vrs') { const n = lists.networks.find((x) => x.id === net.id); return n && n.recipe && n.recipe.vrs ? 'itrf' : 'off'; }
     return 'plain';
   };
@@ -2892,6 +2934,29 @@
     } else if (id === 'near') {
       body = `${tile('near', 1, `есть<small>${esc((d.name || 'ИМЯ').toUpperCase())}_NEAR</small>`, r.near)}${tile('near', 0, 'нет', !r.near)}`;
       note = 'Точка, на которой ровер сам получает ближайшую станцию сети по своему положению.';
+    } else if (id === 'grid') {
+      // Сетка искажений считается в расчётном модуле (шаг «Привязка»), здесь она только включается
+      const g = draftSubnet();
+      const count = g && g.link && g.link.residuals ? Object.keys(g.link.residuals).length : 0;
+      const itrf = ['itrf2014', 'itrf2020'].includes(r.coords);
+      const why = isMain() ? 'только для сети из расчётного модуля' : (!rules.bound ? 'нужна привязка в расчётном модуле' : (!itrf ? 'только при координатах базы в ITRF' : (count < 3 ? 'в привязке меньше трёх станций' : '')));
+      body = `${tile('grid', 'none', 'нет', r.grid !== 'stations', '', '')}${tile('grid', 'stations', `NTv2p<small>по ${count} ${plural(count, 'станции', 'станциям', 'станциям')} модуля, тестовая</small>`, r.grid === 'stations', why, 'gsk')}`;
+      note = r.grid === 'stations' ? 'Ровер получает сообщение 1023: поправку к координатам после семи параметров, по 16 узлам сетки вокруг себя. Сетка — невязки привязки расчётного модуля; посмотреть и пересчитать её можно там, на шаге «Привязка». На карте она показана стрелками.'
+        : 'Сетка искажений поверх семи параметров: убирает то, чем координаты основной сети отличаются от ITRF после общего сдвига. Считается в расчётном модуле, на шаге «Привязка». Включение само ставит пересчёт «в МСК-66», если он ещё не выбран.';
+    } else if (id === 'points') {
+      // Коротко: три строки — виртуальная база, ближайшая база, станции. Имя вписывается, глаз решает,
+      // видна ли точка в списке у ровера
+      const p = netPoints(r);
+      const prefix = (d.name || 'ИМЯ').toUpperCase();
+      const codes = r.stations || draftCodes();
+      const vrsOn = Boolean(n && n.recipe && n.recipe.vrs);
+      const eye = (kind, on) => `<button class="icon-btn adm-pt-eye" type="button" data-pt-eye="${kind}" aria-pressed="${on}" title="${on ? 'Ровер видит точку в списке — нажмите, чтобы скрыть' : 'Скрыта из списка — нажмите, чтобы показать'}">${EYE[on]}</button>`;
+      const row = (kind, title, def, on, why) => `<div class="adm-pt ${p[kind].listed ? '' : 'is-hidden'} ${on ? '' : 'is-idle'}"><span class="adm-pt-kind">${title}</span>
+        <input class="fig" type="text" data-pt="${kind}" value="${esc(p[kind].name)}" placeholder="${esc(def)}" maxlength="32" spellcheck="false" autocomplete="off">${eye(kind, p[kind].listed)}<span class="adm-pt-why">${on ? '' : why}</span></div>`;
+      body = `<div class="adm-pts">${row('vrs', 'виртуальная база', `${prefix}_VRS`, vrsOn, n ? 'включается в блоке «Виртуальная база»' : 'появится после выпуска и включения VRS')}
+        ${row('near', 'ближайшая база', `${prefix}_NEAR`, r.near, 'выключена в блоке «Ближайшая база»')}
+        <div class="adm-pt ${p.stations.listed ? '' : 'is-hidden'}"><span class="adm-pt-kind">станции · ${codes.length}</span><span class="adm-pt-names fig">${esc(codes.slice(0, 4).map((c) => `${prefix}_${c}`).join(', '))}${codes.length > 4 ? ' …' : ''}</span>${eye('stations', p.stations.listed)}<span class="adm-pt-why"></span></div></div>`;
+      note = 'Что ровер увидит в списке точек. Впишите своё имя или оставьте пустым — будет имя по умолчанию (оно показано серым). Глаз скрывает точку из списка: она работает, но подключится только тот, кто знает имя.';
     } else if (id === 'vrs') {
       const on = Boolean(n && n.recipe && n.recipe.vrs);
       body = n ? `<span class="adm-opt ${on ? 'is-itrf' : ''}" aria-current="${on}">${on ? `есть<small>${esc(n.name)}_VRS</small>` : 'нет'}</span><button class="btn btn-quiet btn-small" type="button" data-do="vrs-open">${on ? 'Настройки и контроль' : 'Включить и настроить'}</button>`
@@ -2918,7 +2983,151 @@
       if (net.open) lookLive();
     });
   }
+  // ---------- Сетка искажений на карте ----------
+  // Пока открыто окно сети с сеткой NTv2p, карта показывает её: у каждой станции — кружок цвета
+  // остатка, по полю — стрелки, куда и на сколько сетка сдвигает координаты в этом месте.
+  // Цвет по величине остатка, в тонах панели: зелёный — до 5 см, дальше песочный, оранжевый, розовый
+  const NTV_RAMP = [[0, [127, 230, 200]], [0.05, [127, 230, 200]], [0.2, [255, 214, 150]], [0.5, [255, 176, 122]], [1.2, [255, 138, 150]]];
+  function ntvRgb(m) {
+    for (let i = 1; i < NTV_RAMP.length; i++) {
+      if (m <= NTV_RAMP[i][0]) { const [a, ca] = NTV_RAMP[i - 1]; const [b, cb] = NTV_RAMP[i]; const t = (m - a) / (b - a || 1); return ca.map((v, k) => Math.round(v + (cb[k] - v) * t)); }
+    }
+    return NTV_RAMP[NTV_RAMP.length - 1][1];
+  }
+  const gridColor = (m) => `rgb(${ntvRgb(m).join(',')})`;
+  const gmap = { layer: null, key: '' };
+  // Сетка расчётного модуля: невязки его привязки на станциях с принятыми координатами
+  function moduleGrid(g) {
+    const res = g && g.link ? g.link.residuals || {} : {};
+    const stations = Object.entries(res).map(([code, r]) => {
+      const a = (g.accepted || {})[code];
+      if (!a) return null;
+      const at = window.CoordSys.toGeodetic([Number(a.x), Number(a.y), Number(a.z)], { a: 6378137, f: 1 / 298.257223563 });
+      return { code, lat: at.lat * 180 / Math.PI, lon: at.lon * 180 / Math.PI, e: Number(r.e), n: Number(r.n), u: Number(r.u), used: Boolean(r.used) };
+    }).filter(Boolean);
+    return stations.length >= 3 ? { name: 'NTv2p', stations } : null;
+  }
+  // Какую сетку показывать: открыто окно сети — её (выпущенную или ту, что получится); открыт шаг
+  // «Привязка» модуля — сетку модуля; иначе, если включён значок внизу ленты, — сетку открытой сети
+  // раздачи, если она вещает NTv2p.
+  function gridSource() {
+    if (!window.CoordSys) return null;
+    const n = lists.networks.find((x) => x.id === net.id) || null;
+    const planned = net.look && net.look.plan && net.look.plan.transform ? net.look.plan.transform.grid : null;
+    const live = n && n.release && n.release.transform ? n.release.transform.grid : null;
+    if (net.open && net.draft) {
+      if (net.draft.recipe.grid === 'stations') return planned || live || null;
+      if (net.block === 'grid') return moduleGrid(draftSubnet());
+    }
+    if ($('sub-dialog').open && sub.step === 'bind') return moduleGrid(lists.subnets.find((x) => x.id === sub.id));
+    if (!SHOW.ntv) return null;
+    // Значок внизу ленты показывает сетку только в той сети раздачи, которая её вещает. В основной
+    // сети и в сетях без NTv2p сетки нет — и на карте ей делать нечего.
+    const within = scopeNet();
+    return within && within.release && within.release.transform ? within.release.transform.grid || null : null;
+  }
+  function drawGridMap() {
+    if (!map || !window.L || !window.Transform) return;
+    const grid = gridSource();
+    const key = grid ? JSON.stringify(grid.stations) : '';
+    if (key === gmap.key) return;
+    gmap.key = key;
+    if (gmap.layer) { gmap.layer.remove(); gmap.layer = null; }
+    if (!grid) return;
+    const L = window.L;
+    const T = window.Transform;
+    const pane = map.getPane('ntv') || map.createPane('ntv');
+    pane.style.zIndex = 430;
+
+    const glow = map.getPane('ntvheat') || map.createPane('ntvheat');
+    glow.style.zIndex = 395;
+    glow.style.pointerEvents = 'none';
+    const layer = L.layerGroup();
+    const lats = grid.stations.map((s) => s.lat);
+    const lons = grid.stations.map((s) => s.lon);
+    const south = Math.min(...lats) - 1.6; const north = Math.max(...lats) + 1.6;
+    const west = Math.min(...lons) - 3; const east = Math.max(...lons) + 3;
+    const nearest = (lat, lon) => { const k = Math.cos(lat * Math.PI / 180); return Math.min(...grid.stations.map((s) => Math.hypot((lat - s.lat) * 111.2, (lon - s.lon) * 111.2 * k))); };
+    // 1. Свечение поля: величина остатка цветом, плавно гаснет вдали от станций
+    const W = 260; const H = 150;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const lat = north - (y + 0.5) / H * (north - south);
+      for (let x = 0; x < W; x++) {
+        const lon = west + (x + 0.5) / W * (east - west);
+        const r = T.residualAt(grid, lat, lon);
+        const m = Math.hypot(r.e, r.n);
+        const fade = Math.max(0, Math.min(1, 1 - (nearest(lat, lon) - 70) / 80));
+        const c = ntvRgb(m);
+        const o = (y * W + x) * 4;
+        img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2];
+        img.data[o + 3] = m < 0.05 ? 0 : Math.round(255 * (0.05 + 0.17 * Math.min(1, (m - 0.05) / 0.9)) * fade);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    layer.addLayer(L.imageOverlay(canvas.toDataURL(), [[south, west], [north, east]], { pane: 'ntvheat', interactive: false, className: 'adm-ntv-heat' }));
+    // 2. Течение: от каждой точки поля — струйка по направлению сдвига; длина растёт с величиной,
+    // по струйке бежит искра. Чем больше остаток, тем быстрее.
+    const stream = (lat0, lon0, scale, steps) => {
+      const pts = [[lat0, lon0]];
+      let lat = lat0; let lon = lon0;
+      for (let i = 0; i < steps; i++) {
+        const r = T.residualAt(grid, lat, lon);
+        const m = Math.hypot(r.e, r.n);
+        if (m < 1e-6) break;
+        const len = (0.05 + 0.24 * Math.sqrt(Math.min(m, 1.6))) * scale / steps;
+        lat += r.n / m * len;
+        lon += r.e / m * len / Math.cos(lat * Math.PI / 180);
+        pts.push([lat, lon]);
+      }
+      return pts;
+    };
+    const head = (pts, size) => {
+      const [b, a] = [pts[pts.length - 1], pts[pts.length - 2]];
+      const k = Math.cos(b[0] * Math.PI / 180);
+      const ang = Math.atan2(b[0] - a[0], (b[1] - a[1]) * k);
+      const wing = (d) => [b[0] - Math.sin(ang + d) * size, b[1] - Math.cos(ang + d) * size / k];
+      return [wing(0.5), b, wing(-0.5)];
+    };
+    for (let lat = Math.ceil(south * 4) / 4, row = 0; lat <= north; lat += 0.25, row++) {
+      for (let lon = Math.ceil(west * 2) / 2 + (row % 2 ? 0.25 : 0); lon <= east; lon += 0.5) {
+        if (nearest(lat, lon) > 95) continue;
+        const r = T.residualAt(grid, lat, lon);
+        const m = Math.hypot(r.e, r.n);
+        const color = gridColor(m);
+        if (m < 0.05) continue;
+        const pts = stream(lat, lon, 1, 5);
+        if (pts.length < 2) continue;
+        layer.addLayer(L.polyline(pts, { pane: 'ntv', color, weight: 1.1, opacity: 0.45, interactive: false, className: 'adm-ntv-trail' }));
+        layer.addLayer(L.polyline(pts, { pane: 'ntv', color: '#ffffff', weight: 1.4, opacity: 0.7, interactive: false, className: `adm-ntv-flow ${m > 0.5 ? '' : 'is-slow'}` }));
+        layer.addLayer(L.polyline(head(pts, 0.022), { pane: 'ntv', color, weight: 1.1, opacity: 0.6, interactive: false, className: 'adm-ntv-trail' }));
+      }
+    }
+    // 3. Станции: пульсирующие кольца, толстая стрелка сдвига и подпись — сколько сантиметров в плане и по высоте
+    for (const s of grid.stations) {
+      const m = Math.hypot(s.e, s.n);
+      const color = gridColor(m);
+      if (m >= 0.03) {
+        const pts = stream(s.lat, s.lon, 1.25, 6);
+        if (pts.length > 1) {
+          layer.addLayer(L.polyline(pts, { pane: 'ntv', color, weight: 2.6, opacity: 0.95, interactive: false, className: 'adm-ntv-trail is-main' }));
+          layer.addLayer(L.polyline(head(pts, 0.035), { pane: 'ntv', color, weight: 2.6, opacity: 0.95, interactive: false, className: 'adm-ntv-trail is-main' }));
+          layer.addLayer(L.polyline(pts, { pane: 'ntv', color: '#ffffff', weight: 1.2, opacity: 0.85, interactive: false, className: 'adm-ntv-flow' }));
+        }
+      }
+      const plan = `${(m * 100).toFixed(m < 0.1 ? 1 : 0)} см`;
+      const high = `${s.u > 0 ? '↑' : '↓'}${Math.abs(s.u * 100).toFixed(0)}`;
+      layer.addLayer(L.marker([s.lat, s.lon], { pane: 'ntv', interactive: false, icon: L.divIcon({ className: '', iconSize: [0, 0],
+        html: `<span class="adm-ntv-st ${m >= 0.2 ? 'is-loud' : ''} ${s.used ? 'is-anchor' : ''}" style="--c:${color};--d:${m > 0.5 ? 2.6 : 3.8}s">${m >= 0.2 ? '<i></i>' : ''}<b>${esc(s.code)}</b><em>${s.used ? 'опорная · ' : ''}${plan} · ${high}</em></span>` }) }));
+    }
+    gmap.layer = layer.addTo(map);
+  }
+
   function lookLive() {
+    drawGridMap();
     const box = $('net-what');
     if (!box) return;
     const n = lists.networks.find((x) => x.id === net.id) || null;
@@ -2997,7 +3206,7 @@
     renderNet();
     renderRail();
   }
-  netDialog.addEventListener('close', () => { net.open = false; hideHint(); renderRail(); });
+  netDialog.addEventListener('close', () => { net.open = false; hideHint(); renderRail(); drawGridMap(); });
 
   async function reloadNetworks() {
     const [nets, subs] = await Promise.all([api('/api/admin/networks'), api('/api/admin/subnets')]);
@@ -3009,6 +3218,7 @@
   // Поля ввода пишутся в черновик сразу: перерисовка окна их не сбивает
   netDialog.addEventListener('input', (event) => {
     if (!net.draft) return;
+    if (event.target.dataset.pt) { const p = netPoints(net.draft.recipe); p[event.target.dataset.pt].name = event.target.value.trim(); net.draft.recipe.points = p; }
     if (event.target.id === 'net-name') { net.draft.name = event.target.value; net.draft.nameSet = Boolean(event.target.value.trim()); }
     if (event.target.id === 'net-title') { net.draft.title = event.target.value; net.draft.titleSet = Boolean(event.target.value.trim()); }
     if (event.target.id === 'net-port') { net.draft.portSet = true; net.draft.port = event.target.value.trim(); const v = netDialog.querySelector('[data-block="port"] .adm-block-value'); if (v) v.textContent = net.draft.port || '2101'; }
@@ -3018,6 +3228,14 @@
     if (pick) { openNet(Number(pick.dataset.netPick)); return; }
     const block = event.target.closest('[data-block]');
     if (block) { net.block = net.block === block.dataset.block ? null : block.dataset.block; renderNet(); return; }
+    const eyeBtn = event.target.closest('[data-pt-eye]');
+    if (eyeBtn && net.draft) {
+      const p = netPoints(net.draft.recipe);
+      p[eyeBtn.dataset.ptEye].listed = !p[eyeBtn.dataset.ptEye].listed;
+      net.draft.recipe.points = p;
+      renderNet();
+      return;
+    }
     const opt = event.target.closest('[data-opt]');
     if (opt && net.draft) {
       const r = net.draft.recipe;
@@ -3028,6 +3246,8 @@
       if (opt.dataset.opt === 'coords') r.coords = v;
       if (opt.dataset.opt === 'transform') r.transform = v;
       if (opt.dataset.opt === 'igd') r.igd = v;
+      // Сетка — поправка к МСК: без пересчёта в МСК она не нужна, поэтому пересчёт включается вместе с ней
+      if (opt.dataset.opt === 'grid') { r.grid = v; if (v === 'stations' && !usesIgd(r)) r.transform = 'msk66'; }
       if (opt.dataset.opt === 'port') { net.draft.port = v; net.draft.portSet = true; }
       if (opt.dataset.opt === 'rate') r.rate = Number(v);
       if (opt.dataset.opt === 'near') r.near = v === '1';

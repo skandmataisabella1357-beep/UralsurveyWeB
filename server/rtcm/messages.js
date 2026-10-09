@@ -261,7 +261,55 @@ function restamp(buf, stationId) {
   return true;
 }
 
+// ---------- 1023: остатки на сетке (эллипсоидальной) ----------
+// Сетка искажений NTv2p: после семи параметров (1021) ровер прибавляет к широте, долготе и высоте
+// поправку, которую интерполирует по 16 узлам вокруг себя. В сообщении — начало окна, шаг сетки,
+// среднее по окну и отклонения узлов от среднего. Всего 578 бит.
+// Порядок узлов и то, какой узел считается началом, стандарт описывает рисунком; здесь принято:
+// начало — юго-западный узел окна 4×4, узлы идут строками с юга на север, в строке — с запада на
+// восток. На живом ровере это не проверено.
+const RESIDUAL_LIMITS = { nodeArc: 255 * 0.00003, nodeH: 0.255, meanArc: 0.127, meanH: 163.83 };
+const clampTo = (v, lim) => Math.max(-lim, Math.min(lim, v));
+
+function encodeResiduals(p) {
+  if (!Array.isArray(p.nodes) || p.nodes.length !== 16) throw new Error('в сообщении 1023 должно быть 16 узлов');
+  const w = new BitPacker(578);
+  w.u(12, 1023).u(8, p.systemId || 0).u(1, p.horizontal === false ? 0 : 1).u(1, p.vertical === false ? 0 : 1);
+  w.s(21, p.lat0 * 7200).s(22, p.lon0 * 7200).u(12, p.dLat * 2).u(12, p.dLon * 2);
+  w.s(8, clampTo(p.meanLat, RESIDUAL_LIMITS.meanArc) * 1000).s(8, clampTo(p.meanLon, RESIDUAL_LIMITS.meanArc) * 1000).s(15, clampTo(p.meanH, RESIDUAL_LIMITS.meanH) * 100);
+  for (const n of p.nodes) {
+    w.s(9, clampTo(n.dLat, RESIDUAL_LIMITS.nodeArc) / 0.00003).s(9, clampTo(n.dLon, RESIDUAL_LIMITS.nodeArc) / 0.00003).s(9, clampTo(n.dH, RESIDUAL_LIMITS.nodeH) * 1000);
+  }
+  w.u(2, p.hInterp || 0).u(2, p.vInterp || 0).u(3, p.hQuality || 0).u(3, p.vQuality || 0).u(16, (p.mjd || 0) % 65536);
+  return frame(w.buf);
+}
+
+function decodeResiduals(payload) {
+  const r = new BitUnpacker(payload);
+  const type = r.u(12);
+  if (type !== 1023) throw new Error(`это сообщение ${type}, а не 1023`);
+  const out = { type, systemId: r.u(8), horizontal: r.u(1) === 1, vertical: r.u(1) === 1 };
+  out.lat0 = r.s(21) / 7200;
+  out.lon0 = r.s(22) / 7200;
+  out.dLat = r.u(12) / 2;
+  out.dLon = r.u(12) / 2;
+  out.meanLat = r.s(8) / 1000;
+  out.meanLon = r.s(8) / 1000;
+  out.meanH = r.s(15) / 100;
+  out.nodes = [];
+  for (let i = 0; i < 16; i++) out.nodes.push({ dLat: Number((r.s(9) * 0.00003).toFixed(5)), dLon: Number((r.s(9) * 0.00003).toFixed(5)), dH: r.s(9) / 1000 });
+  out.hInterp = r.u(2);
+  out.vInterp = r.u(2);
+  out.hQuality = r.u(3);
+  out.vQuality = r.u(3);
+  out.mjd = r.u(16);
+  return out;
+}
+
 module.exports = {
+  encodeResiduals,
+  decodeResiduals,
+  RESIDUAL_LIMITS,
   frame,
   encodePosition,
   decodePosition,

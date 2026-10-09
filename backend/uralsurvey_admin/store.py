@@ -239,6 +239,17 @@ SETTINGS = {
 }
 
 
+def point_overrides(conn) -> dict[str, dict]:
+    """Свои имена и видимость точек, которые сервер заводит сам (конструктор точек доступа)."""
+    return {r["key"]: r for r in conn.execute("SELECT key, name, listed FROM point_overrides").fetchall()}
+
+
+def auto_point(over: dict[str, dict], key: str, default: str) -> tuple[str, bool]:
+    """Имя точки и показывать ли её в таблице источников: заданные в конструкторе либо по умолчанию."""
+    row = over.get(key)
+    return ((row["name"] or default) if row else default, bool(row["listed"]) if row else True)
+
+
 def clean(table: str, data: dict, partial: bool) -> dict:
     """Проверяет поля и отбрасывает незнакомые. partial — правка: проверяются только присланные."""
     if not isinstance(data, dict):
@@ -939,6 +950,7 @@ class Store:
             stations = conn.execute("SELECT * FROM stations WHERE enabled ORDER BY code").fetchall()
             points = conn.execute("SELECT m.*, s.code AS station_code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE s.enabled ORDER BY m.name").fetchall()
             logins = conn.execute("SELECT * FROM ntrip_logins ORDER BY login").fetchall()
+            over = point_overrides(conn)
             subs = conn.execute("SELECT s.*, t.all_mountpoints, t.max_sessions AS tariff_sessions FROM subscriptions s JOIN tariffs t ON t.id = s.tariff_id").fetchall()
             tariff_points = conn.execute("SELECT tm.tariff_id, m.name FROM tariff_mountpoints tm JOIN mountpoints m ON m.id = tm.mountpoint_id "
                                          "UNION SELECT tn.tariff_id, m.name FROM tariff_networks tn JOIN mountpoints m ON m.network_id = tn.network_id").fetchall()
@@ -965,16 +977,19 @@ class Store:
         for p in points:
             if p["network_id"] is None and p["access"] == "all" and p["enabled"] and p["listed"]:
                 main.setdefault(p["station_code"], p["name"])
-        if len(main) > 1 and NEAR not in taken:
-            auto.append({"name": NEAR, "points": sorted(main.values()), "port": None})
-            open_points.append(NEAR)
+        near_main, near_listed = auto_point(over, "near:main", NEAR)
+        if len(main) > 1 and near_main not in taken:
+            auto.append({"name": near_main, "points": sorted(main.values()), "port": None, "listed": near_listed})
+            open_points.append(near_main)
+            taken.add(near_main)
         net_auto: dict[int, str] = {}
         for n in net_rows:
             own = [p["name"] for p in points if p["network_id"] == n["id"] and p["enabled"]]
-            name = f"{n['name']}_{NEAR}"
+            name, listed = auto_point(over, f"near:{n['id']}", f"{n['name']}_{NEAR}")
             if len(own) > 1 and name not in taken and (n["release"] or {}).get("near", True):
-                auto.append({"name": name, "points": own, "port": n["port"]})
+                auto.append({"name": name, "points": own, "port": n["port"], "listed": listed})
                 net_auto[n["id"]] = name
+                taken.add(name)
         for tn in tariff_nets:
             if tn["network_id"] in net_auto:
                 by_tariff.setdefault(tn["tariff_id"], []).append(net_auto[tn["network_id"]])
@@ -982,10 +997,11 @@ class Store:
         virtual: list[dict] = []
         for n in net_rows:
             release = n["release"] or {}
-            name = f"{n['name']}_{VRS}"
+            name, listed = auto_point(over, f"vrs:{n['id']}", f"{n['name']}_{VRS}")
             if not release.get("vrs") or name in taken:
                 continue
-            virtual.append({"name": name, "port": n["port"], "transform": release.get("transform")})
+            taken.add(name)
+            virtual.append({"name": name, "port": n["port"], "transform": release.get("transform"), "listed": listed})
             for tn in tariff_nets:
                 if tn["network_id"] == n["id"]:
                     by_tariff.setdefault(tn["tariff_id"], []).append(name)
@@ -1435,6 +1451,11 @@ class Store:
             raise Problem("Параметры ИГД: ГОСТ Р 51794-2001, ГОСТ Р 51794-2008 или ГОСТ 32453-2017.")
         if coords in ("net1", "gsk2011") and transform != "none":
             raise Problem("Пересчёт в потоке возможен только при координатах базы в ITRF: координаты «как основная сеть» и ГСК-2011 уже пересчитаны, второй раз сдвигать нельзя.")
+        grid = str(data.get("grid") or "none")
+        if grid not in NET_GRIDS:
+            raise Problem("Сетка искажений: нет или NTv2p по станциям сети.")
+        if transform not in ("msk66", "sk42"):
+            grid = "none"  # сетка поправляет то, что осталось после перехода на эллипсоид Красовского
         stations = data.get("stations")
         if stations is not None:
             if not isinstance(stations, list) or not stations or any(not isinstance(c, str) or not re.fullmatch(CODE, c) for c in stations):
@@ -1451,8 +1472,20 @@ class Store:
             rate = 0
         if rate not in NET_RATES:
             raise Problem("Частота поправок: раз в 1, 2, 5 или 10 секунд.")
+        # Точки доступа сети: свои имена у «виртуальной базы» и «ближайшей базы» (пусто — по умолчанию,
+        # ИМЯСЕТИ_VRS и ИМЯСЕТИ_NEAR) и видимость в таблице источников — их и точек станций.
+        asked = data.get("points") if isinstance(data.get("points"), dict) else {}
+        points: dict[str, dict] = {}
+        for kind in ("vrs", "near", "stations"):
+            one = asked.get(kind) if isinstance(asked.get(kind), dict) else {}
+            points[kind] = {"listed": bool(one.get("listed", True))}
+            if kind != "stations":
+                name = str(one.get("name") or "").strip()
+                if name and not re.fullmatch(CODE, name):
+                    raise Problem(f"Имя точки «{name[:40]}»: латинские буквы, цифры, «_» и «-», до 32 знаков.")
+                points[kind]["name"] = name
         return {"source": source, "coords": coords, "transform": transform, "stations": stations, "systems": [c for c in NET_SYSTEMS if c in systems], "rate": rate,
-                "near": bool(data.get("near", True)), "igd": igd if transform in ("msk66", "sk42") else "g2008", "vrs": vrs_options(data.get("vrs")) if data.get("vrs") else None}
+                "points": points, "grid": grid, "near": bool(data.get("near", True)), "igd": igd if transform in ("msk66", "sk42") else "g2008", "vrs": vrs_options(data.get("vrs")) if data.get("vrs") else None}
 
     @staticmethod
     def _recipe_kind(recipe: dict) -> str:
@@ -1514,6 +1547,26 @@ class Store:
             through = pre if recipe["transform"] == "gsk2011" else {k: round(float(link[k]) + pre[k], 6) for k in pre}
             out["transform"] = {"target": recipe["transform"], "igd": recipe.get("igd", "g2008"), "link": through, "epoch": epoch, "source": "ITRF2020" if recipe["coords"] == "itrf2020" else "ITRF2014",
                                 "area": helmert.area([s["src"] for s in stations.values()])}
+            if recipe.get("grid") == "stations":
+                # Сетка искажений NTv2p, тестовая. Считается в расчётном модуле, на шаге «Привязка»: это
+                # невязки привязки — на сколько координаты станции в каталоге основной сети отстоят от
+                # принятых (ITRF2014), пересчитанных семью параметрами. Берутся все станции модуля, не
+                # только вошедшие в эту сеть: сетка одна на модуль. Между станциями остаток
+                # интерполируется. В остатках сидят и перекосы старой сети, и ошибки координат отдельных
+                # станций — разделить их можно только по пунктам ГГС.
+                nodes = []
+                for code, res in sorted(((subnet["link"] or {}).get("residuals") or {}).items()):
+                    a = accepted.get(code)
+                    if not a:
+                        continue
+                    lat, lon = helmert.geodetic([float(a["x"]), float(a["y"]), float(a["z"])])
+                    nodes.append({"code": code, "lat": round(math.degrees(lat), 6), "lon": round(math.degrees(lon), 6),
+                                  "e": float(res["e"]), "n": float(res["n"]), "u": float(res["u"]),
+                                  # used — станция участвовала в расчёте семи параметров (опорная): остаток у неё почти нулевой
+                                  "used": bool(res.get("used"))})
+                if len(nodes) < 3:
+                    raise Problem("Сетка искажений: в привязке расчётного модуля должно быть не меньше трёх станций. Пересчитайте привязку на шаге «Привязка».")
+                out["transform"]["grid"] = {"name": GRID_NAME, "kind": "stations", "stations": nodes, "step": [300, 600], "power": 2}
         return out
 
     @staticmethod
@@ -1525,10 +1578,13 @@ class Store:
                   if c in was and "x" in s and "x" in was[c]}
         worst = max(shifts, key=shifts.get) if shifts else None
         same = lambda key: (old or {}).get(key) == new.get(key)
+        # Точки доступа (имена и видимость) — тоже часть выпуска; у прежних выпусков их нет, это «по умолчанию»
+        plain = {"vrs": {"listed": True, "name": ""}, "near": {"listed": True, "name": ""}, "stations": {"listed": True}}
+        pts = lambda rel: ((rel or {}).get("recipe") or {}).get("points") or plain  # noqa: E731
         return {"shifts": shifts, "added": sorted(c for c in new["stations"] if c not in was), "gone": sorted(c for c in was if c not in new["stations"]),
                 "max_shift": shifts[worst] if worst else None, "max_station": worst,
                 # Координаты могут остаться теми же, а измениться — параметры пересчёта, спутники, частота
-                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near") and same("vrs") and same("subnet")),
+                "params_changed": bool(old) and not (same("transform") and same("filter") and same("near") and same("vrs") and same("subnet") and pts(old) == pts(new)),
                 # Сменился источник: основная сеть или другой расчётный модуль
                 "source_changed": bool(old) and not same("subnet")}
 
@@ -1602,9 +1658,36 @@ class Store:
             if station_id not in have:
                 self._insert(conn, "mountpoints", {"name": f"{net['name']}_{code}"[:32], "station_id": station_id, "network_id": net["id"], "access": "tariff",
                                                    "rtcm_station_id": ids.get(station_id), "note": f"сеть раздачи {net['name']}"})
+        # Точки доступа — как сказано в блоке «Точки доступа» выпуска: видимость точек станций и
+        # свои имена и видимость «ближайшей» и «виртуальной» базы. Скрытая точка работает, но в
+        # таблице источников её нет.
+        spec = (release.get("recipe") or {}).get("points") or {}
+        conn.execute("UPDATE mountpoints SET listed = %s WHERE network_id = %s", (bool((spec.get("stations") or {}).get("listed", True)), net["id"]))
+        for kind in ("near", "vrs"):
+            one = spec.get(kind) or {}
+            conn.execute("INSERT INTO point_overrides (key, name, listed) VALUES (%s, %s, %s) "
+                         "ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, listed = EXCLUDED.listed, updated_at = now()",
+                         (f"{kind}:{net['id']}", one.get("name") or None, bool(one.get("listed", True))))
+        self._points_unique(conn)
         self._audit(conn, who, action, "networks", net["id"], {"name": net["name"], "version": version, "stations": len(release["stations"]),
                                                                "max_shift": diff["max_shift"], "added": diff["added"], "gone": diff["gone"]})
         return self._network_view(conn, row)
+
+    @staticmethod
+    def _points_unique(conn) -> None:
+        """Имя точки одно на весь сервер: ровер называет только его, порт значения не имеет."""
+        over = point_overrides(conn)
+        # Проверяются имена, заданные в блоке «Точки доступа»: они не должны совпасть ни с точкой
+        # станции, ни с другой такой точкой. Имена по умолчанию раздача разводит сама.
+        seen = {r["name"].lower() for r in conn.execute("SELECT name FROM mountpoints").fetchall()}
+        for net in conn.execute("SELECT id, name FROM networks ORDER BY id").fetchall():
+            for key in (f"near:{net['id']}", f"vrs:{net['id']}"):
+                name = (over.get(key) or {}).get("name")
+                if not name:
+                    continue
+                if name.lower() in seen:
+                    raise Problem(f"Имя точки «{name}» уже занято: имена точек на сервере не должны совпадать.", 409)
+                seen.add(name.lower())
 
     def network_create(self, who: dict, data: dict) -> dict:
         """Выпустить новую сеть раздачи из расчётного модуля: имя, вид и первый снимок координат."""
@@ -1649,8 +1732,9 @@ class Store:
             value = vrs_options(options) if options else None
             recipe = {**(net["recipe"] or self._recipe(net["kind"])), "vrs": value}
             release = {**(net["release"] or {}), "vrs": value, "recipe": recipe}
-            if value and f"{net['name']}_{VRS}" in {r["name"] for r in conn.execute("SELECT name FROM mountpoints")}:
-                raise Problem(f"Имя {net['name']}_{VRS} уже занято обычной точкой подключения: переименуйте её.")
+            vrs_name = auto_point(point_overrides(conn), f"vrs:{network_id}", f"{net['name']}_{VRS}")[0]
+            if value and vrs_name in {r["name"] for r in conn.execute("SELECT name FROM mountpoints")}:
+                raise Problem(f"Имя {vrs_name} уже занято обычной точкой подключения: переименуйте её.")
             row = self._update(conn, "networks", network_id, {"recipe": Jsonb(recipe), "release": Jsonb(release), "updated_at": dt.datetime.now(dt.timezone.utc)})
             self._audit(conn, who, "виртуальные базы: " + ("настройки" if value else "выключены"), "networks", network_id, {"name": net["name"], "vrs": value})
             return self._network_view(conn, row)
@@ -1660,6 +1744,7 @@ class Store:
         ecef — координаты станции для расчёта (все в одной системе), out — те, что сеть объявляет роверу."""
         with self.db.connection() as conn:
             nets = conn.execute("SELECT id, name, title, release FROM networks ORDER BY name").fetchall()
+            over = point_overrides(conn)
             catalog = {r["code"]: [float(r["x"]), float(r["y"]), float(r["z"])] for r in conn.execute("SELECT code, x, y, z FROM stations WHERE enabled AND x IS NOT NULL")}
             live = {(r["network_id"], r["code"]) for r in conn.execute(
                 "SELECT m.network_id, s.code FROM mountpoints m JOIN stations s ON s.id = m.station_id WHERE m.network_id IS NOT NULL AND m.enabled AND s.enabled")}
@@ -1678,7 +1763,7 @@ class Store:
                         stations.append({"code": code, "ecef": catalog[code], "out": catalog[code]})
                 elif "src" in st:
                     stations.append({"code": code, "ecef": [float(v) for v in st["src"]], "out": [float(st["x"]), float(st["y"]), float(st["z"])]})
-            out.append({"id": n["id"], "name": f"{n['name']}_{VRS}", "title": n["title"] or "", "stations": stations, "options": release["vrs"]})
+            out.append({"id": n["id"], "name": auto_point(over, f"vrs:{n['id']}", f"{n['name']}_{VRS}")[0], "title": n["title"] or "", "stations": stations, "options": release["vrs"]})
         return out
 
     def network_rollback(self, who: dict, network_id: int, version: int) -> dict:
@@ -1729,6 +1814,8 @@ class Store:
                     for point_id, new in renamed.items():
                         conn.execute("UPDATE mountpoints SET name = %s WHERE id = %s", (new, point_id))
                     fields["name"] = name
+                    conn.execute("UPDATE networks SET name = %s WHERE id = %s", (name, network_id))
+                    self._points_unique(conn)
             if "title" in data:
                 fields["title"] = str(data.get("title") or "").strip()[:80]
             if "port" in data:
@@ -1741,6 +1828,7 @@ class Store:
     def network_delete(self, who: dict, network_id: int) -> None:
         with self.db.transaction() as conn:
             row = self._delete(conn, "networks", network_id)
+            conn.execute("DELETE FROM point_overrides WHERE key IN (%s, %s)", (f"near:{network_id}", f"vrs:{network_id}"))
             self._audit(conn, who, "удалена", "networks", network_id, {"name": row["name"]})
 
     def subnet_ppp_daily(self, who: dict, row_id: int, on: bool) -> dict:
@@ -2044,6 +2132,10 @@ NEAR = "NEAR"  # точка «ближайшая база»: ровер сам �
 NET_COORDS = ("itrf2014", "itrf2020", "net1", "gsk2011")  # в чём координаты базы; net1 — как основная сеть
 NET_IGD = ("g2001", "g2008", "g2017")  # редакция параметров ИГД для пересчёта в МСК-66 и СК-42
 NET_TRANSFORMS = ("none", "msk66", "sk42", "gsk2011")  # пересчёт в потоке сообщениями 1021 и 1025
+# Сетка искажений NTv2p поверх пересчёта в МСК-66 и СК-42 (сообщение 1023): none — нет,
+# stations — тестовая, по остаткам на станциях сети после привязки
+NET_GRIDS = ("none", "stations")
+GRID_NAME = "NTv2p"
 NET_SYSTEMS = ("G", "R", "E", "C")  # GPS, ГЛОНАСС, Galileo, BeiDou
 NET_RATES = (1, 2, 5, 10)  # секунд между эпохами
 REACH_MM = 150  # расхождение ионосферы с базой, до которого двухчастотный ровер получает фикс
