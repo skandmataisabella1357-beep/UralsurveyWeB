@@ -995,7 +995,16 @@
   function loadRegions() {
     if (regions.data || regions.asked) return;
     regions.asked = true;
-    fetch('/regions.json').then((r) => r.json()).then((d) => { regions.data = d.regions; regionCache.clear(); renderRail(); drawRegions(); }).catch(() => { regions.asked = false; });
+    fetch('/regions.json').then((r) => r.json()).then((d) => { regions.data = d.regions; regionCache.clear(); renderRail(); drawRegions(); if (net.draft) { fixDraft(); renderNet(); } }).catch(() => { regions.asked = false; });
+  }
+  // Порт сети по области: большинство её станций стоит в одном регионе — порт 7000 + его номер
+  function regionPort(codes) {
+    if (!regions.data) { loadRegions(); return null; }
+    const count = new Map();
+    for (const c of codes) { const name = regionOf(c); if (name !== NO_REGION) count.set(name, (count.get(name) || 0) + 1); }
+    const top = [...count].sort((a, b) => b[1] - a[1])[0];
+    const reg = top ? regions.data.find((x) => x.name === top[0]) : null;
+    return reg && reg.code ? { port: 7000 + reg.code, code: reg.code, name: reg.name, whole: top[1] === codes.length } : null;
   }
   function regionOf(code) {
     const st = liveOf(code);
@@ -2705,6 +2714,13 @@
   // Несовместимый выбор исправляется сам: пересчёт снимается, если координаты уже пересчитаны
   function fixDraft() {
     const r = net.draft.recipe;
+    // Новой сети порт предлагается сразу — по области её станций: 70 и номер региона
+    // (Свердловская — 7066). Порты 7000–7200 открыты; основная сеть остаётся на 2101.
+    // Только когда все станции сети в одной области; иначе — общий порт.
+    if (net.id === null && !net.draft.portSet) {
+      const hint = regionPort(r.stations || draftCodes());
+      net.draft.port = hint && hint.whole ? String(hint.port) : '';
+    }
     if (isMain()) {
       r.coords = 'stream';
       r.transform = 'none';
@@ -2806,7 +2822,8 @@
         : '<span class="adm-opt" aria-current="false">после выпуска сети</span>';
       note = 'Виртуальная база: ровер подключается к одной точке на всю сеть и получает базу «рядом с собой» — наблюдения ближайшей станции, перенесённые в его место, с поправками сети на ионосферу и тропосферу. Чем дальше ровер от станций, тем заметнее выигрыш перед обычной точкой. Включается и настраивается в своём окне, сразу, без нового выпуска.';
     } else {
-      body = `<label class="adm-port"><span>порт раздачи</span><input id="net-port" type="text" inputmode="numeric" maxlength="5" autocomplete="off" value="${esc(String(d.port || ''))}" placeholder="2101"></label>`;
+      const hint = regionPort(r.stations || draftCodes());
+      body = `<label class="adm-port"><span>порт раздачи</span><input id="net-port" type="text" inputmode="numeric" maxlength="5" autocomplete="off" value="${esc(String(d.port || ''))}" placeholder="2101"></label>${hint ? tile('port', hint.port, `${hint.port}<small>${esc(hint.name)}, регион ${hint.code}</small>`, String(d.port) === String(hint.port), '', 'itrf') : ''}${tile('port', '', '2101<small>общий, как основная сеть</small>', !d.port, '', '')}`;
       note = 'Пусто или 2101 — общий порт вместе с основной сетью. На своём порту ровер видит в таблице источников только точки этой сети. Порт должен быть проброшен на роутере; 2110–2159 заняты приёмом станций.';
     }
     return `<div class="adm-flow-opts">${body}</div><p class="hint adm-flow-hint">${note}</p>`;
@@ -2918,7 +2935,7 @@
     if (!net.draft) return;
     if (event.target.id === 'net-name') net.draft.name = event.target.value;
     if (event.target.id === 'net-title') net.draft.title = event.target.value;
-    if (event.target.id === 'net-port') { net.draft.port = event.target.value.trim(); const v = netDialog.querySelector('[data-block="port"] .adm-block-value'); if (v) v.textContent = net.draft.port || '2101'; }
+    if (event.target.id === 'net-port') { net.draft.portSet = true; net.draft.port = event.target.value.trim(); const v = netDialog.querySelector('[data-block="port"] .adm-block-value'); if (v) v.textContent = net.draft.port || '2101'; }
   });
   netDialog.addEventListener('click', async (event) => {
     const pick = event.target.closest('[data-net-pick]');
@@ -2934,6 +2951,7 @@
       if (opt.dataset.opt === 'coords') r.coords = v;
       if (opt.dataset.opt === 'transform') r.transform = v;
       if (opt.dataset.opt === 'igd') r.igd = v;
+      if (opt.dataset.opt === 'port') { net.draft.port = v; net.draft.portSet = true; }
       if (opt.dataset.opt === 'rate') r.rate = Number(v);
       if (opt.dataset.opt === 'near') r.near = v === '1';
       if (opt.dataset.opt === 'system' && v !== 'G') r.systems = Object.keys(SYSTEMS).filter((c) => (c === v ? !r.systems.includes(c) : r.systems.includes(c)));

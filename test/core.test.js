@@ -454,3 +454,28 @@ test('список кастеров из текстового файла', () =>
   ]);
   assert.deepEqual(errors.map((e) => e.line), [7, 8]);
 });
+
+test('связь: кастеру-источнику раз в минуту уходит GGA, иначе он отключает молчащего клиента', async () => {
+  const { Transport, ggaLine } = require('../core/transport');
+  const line = ggaLine({ lat: 56.8389, lon: 60.6057, h: 281.4 }, new Date(Date.UTC(2026, 9, 9, 3, 17, 21)));
+  assert.match(line, /^\$GPGGA,031721\.00,5650\.33400,N,06036\.34200,E,1,10,1\.0,281\.4,M,0\.0,M,,\*[0-9A-F]{2}\r\n$/);
+  let sum = 0;
+  for (const ch of line.slice(1, line.indexOf('*'))) sum ^= ch.charCodeAt(0);
+  assert.equal(sum.toString(16).toUpperCase().padStart(2, '0'), line.slice(line.indexOf('*') + 1, -2));
+  assert.match(ggaLine(null), /^\$GPGGA,\d{6}\.00,,,,,0,00,,,M,,M,,\*[0-9A-F]{2}\r\n$/);
+
+  const sent = [];
+  const t = new Transport({ mode: 'ntrip', host: 'x', port: 1 });
+  t.socket = { writable: true, write: (s) => sent.push(s) };
+  t.where = () => ({ lat: 57, lon: 60, h: 100 });
+  t.state = 'waiting';
+  t.keepAlive(1e6);
+  assert.equal(sent.length, 0, 'до начала потока ничего не шлём');
+  t.state = 'online';
+  t.keepAlive(1e6); t.keepAlive(1e6 + 30000); t.keepAlive(1e6 + 61000);
+  assert.equal(sent.length, 2);
+  assert.match(sent[0], /^\$GPGGA,.*5700\.00000,N,06000\.00000,E/);
+  t.cfg.mode = 'tcp';
+  t.keepAlive(1e6 + 200000);
+  assert.equal(sent.length, 2, 'приёмнику по TCP ничего не шлём');
+});

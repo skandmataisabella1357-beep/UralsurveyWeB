@@ -12,6 +12,22 @@ const { EventEmitter } = require('events');
 const CONNECT_TIMEOUT_MS = 10000;
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000, 30000];
 const STABLE_MS = 30000; // столько должен прожить поток, чтобы сбросить счётчик попыток
+// Кастер-источник закрывает клиента, от которого долго ничего не приходит (обычно 10 минут):
+// раз в минуту сообщаем ему своё место строкой GGA — как делает любой ровер.
+const GGA_MS = 60000;
+
+// Строка GGA: место станции, если оно известно, иначе — «решения нет»
+function ggaLine(pos, now = new Date()) {
+  const two = (v) => String(v).padStart(2, '0');
+  const time = `${two(now.getUTCHours())}${two(now.getUTCMinutes())}${two(now.getUTCSeconds())}.00`;
+  const part = (v, w) => { const a = Math.abs(v); const d = Math.floor(a); return `${String(d).padStart(w, '0')}${((a - d) * 60).toFixed(5).padStart(8, '0')}`; };
+  const body = pos && Number.isFinite(pos.lat) && Number.isFinite(pos.lon)
+    ? `GPGGA,${time},${part(pos.lat, 2)},${pos.lat < 0 ? 'S' : 'N'},${part(pos.lon, 3)},${pos.lon < 0 ? 'W' : 'E'},1,10,1.0,${(pos.h || 0).toFixed(1)},M,0.0,M,,`
+    : `GPGGA,${time},,,,,0,00,,,M,,M,,`;
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) sum ^= body.charCodeAt(i);
+  return `$${body}*${sum.toString(16).toUpperCase().padStart(2, '0')}\r\n`;
+}
 
 const STATES = {
   idle: 'Остановлено',
@@ -51,6 +67,8 @@ class Transport extends EventEmitter {
     this.onlineSince = 0;
     this.timers = new Set();
     this.watchdog = null;
+    this.where = null; // функция: где стоит станция ({ lat, lon, h }) — для строки GGA кастеру
+    this.ggaAt = 0;
   }
 
   start() {
@@ -102,6 +120,7 @@ class Transport extends EventEmitter {
   // Данные перестали идти: рвём соединение, дальше сработает обычное переподключение
   checkStall() {
     if (!this.socket || !this.lastDataAt) return;
+    this.keepAlive();
     const idle = Date.now() - this.lastDataAt;
     if (this.state === 'online' && this.onlineSince && Date.now() - this.onlineSince > STABLE_MS) {
       this.attempt = 0;
@@ -112,6 +131,15 @@ class Transport extends EventEmitter {
         : 'соединение есть, но данные не поступают';
       this.socket.destroy();
     }
+  }
+
+  // Кастеру-источнику раз в минуту уходит GGA: молчащего клиента он отключает
+  keepAlive(now = Date.now()) {
+    if (this.cfg.mode !== 'ntrip' || this.state !== 'online' || now - this.ggaAt < GGA_MS) return;
+    this.ggaAt = now;
+    let pos = null;
+    try { pos = this.where ? this.where() : null; } catch (err) { pos = null; }
+    if (this.socket.writable) this.socket.write(ggaLine(pos, new Date(now)));
   }
 
   onData(chunk) {
@@ -174,6 +202,7 @@ class Transport extends EventEmitter {
         return;
       }
       header = null;
+      this.ggaAt = Date.now();
       this.lastDataAt = Date.now();
       if (res.rest.length) this.onData(res.rest);
     });
@@ -343,4 +372,4 @@ function probePort(host, port, timeoutMs = 6000) {
   });
 }
 
-module.exports = { Transport, STATES, parseNtripResponse, probePort, tunnelName };
+module.exports = { Transport, STATES, parseNtripResponse, probePort, tunnelName, ggaLine };

@@ -34,6 +34,7 @@ class StationSession extends EventEmitter {
     this.relay = cfg.relayPort ? new Relay(cfg.relayPort) : null;
     if (this.relay) this.relay.on('log', (level, text) => this.addLog(level, text));
 
+    this.transport.where = () => this.position(Date.now());
     this.transport.on('data', (chunk) => this.onData(chunk));
     this.transport.on('log', (level, text) => this.addLog(level, text));
     this.transport.on('state', (state, detail) => this.onState(state, detail));
