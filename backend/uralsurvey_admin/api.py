@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import security
+from . import access, security
 from .page import admin_page
 from .store import Problem, Store, dumps
 
@@ -31,6 +31,7 @@ STATIC = [
     ("/modules/layers/", ROOT / "modules" / "layers"),
     ("/modules/transform/", ROOT / "modules" / "transform"),
     ("/modules/geoid/", ROOT / "modules" / "geoid"),
+    ("/modules/access/", ROOT / "modules" / "access"),
     ("/", ROOT / "server" / "web"),
 ]
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -153,6 +154,10 @@ class App:
             r("POST", r"/api/admin/logins/(\d+)/reveal", lambda q: (200, store.reveal_login_password(q.who, q.id)), "admin"),
             r("POST", r"/api/admin/logins/(\d+)/regenerate", lambda q: (200, store.regenerate_login_password(q.who, q.id)), "admin"),
             r("DELETE", r"/api/admin/logins/(\d+)", lambda q: (200, store.delete_login(q.who, q.id) or {}), "admin"),
+            # Доступы: логин, срок и подключения одним списком (модуль access)
+            r("GET", r"/api/admin/access", lambda q: (200, access.access_list(store)), "operator"),
+            r("POST", r"/api/admin/access/import", lambda q: (200, access.access_import(store, q.who, q.body.get("items"), str(q.body.get("source") or "NRS")[:40])), "admin"),
+            r("POST", r"/api/admin/access/(\d+)", lambda q: (200, access.access_update(store, q.who, q.id, q.body)), "admin"),
             # Журналы
             r("GET", r"/api/admin/sessions", lambda q: (200, store.list_sessions(
                 q.arg("login"), q.arg("mountpoint"), q.arg("from"), q.arg("to"), q.arg("open") == "1", q.int_arg("limit") or 200, q.int_arg("offset") or 0)), "operator"),

@@ -1,0 +1,44 @@
+/* Модуль «Доступы»: цвет строки — состояние логина */
+.acc { --acc: var(--muted); }
+.acc .is-ok, .acc-dialog .is-ok { --acc: var(--flow); }
+.acc .is-warn, .acc-dialog .is-warn { --acc: var(--wait); }
+.acc .is-fail, .acc-dialog .is-fail { --acc: var(--fail); }
+.acc .is-hold, .acc-dialog .is-hold { --acc: #a890ff; }
+.acc .is-off, .acc-dialog .is-off { --acc: var(--muted); }
+.acc .is-staff, .acc-dialog .is-staff { --acc: #84c8ff; }
+.acc .is-on { --acc: #5df2b0; }
+.acc .is-weak { --acc: var(--wait); }
+
+.acc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.acc-chip { display: inline-flex; align-items: center; gap: 6px; }
+.acc-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--acc); }
+.acc-chip b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.acc-table th { cursor: pointer; user-select: none; white-space: nowrap; }
+.acc-table th[aria-sort='ascending']::after { content: ' ↑'; }
+.acc-table th[aria-sort='descending']::after { content: ' ↓'; }
+.acc-table th[aria-sort='ascending'], .acc-table th[aria-sort='descending'] { color: var(--text); }
+.acc-row td:first-child { box-shadow: inset 3px 0 0 var(--acc); padding-left: 12px; }
+.acc-row.is-off td, .acc-row.is-fail td { opacity: 0.78; }
+.acc-login { display: inline-flex; align-items: center; gap: 7px; }
+.acc-login b { color: var(--acc); font-weight: 600; font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 12px; }
+.acc-dot { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--line); flex: none; }
+.acc-dot.is-on { border-color: transparent; background: #5df2b0; box-shadow: 0 0 0 0 rgba(93, 242, 176, 0.6); animation: acc-pulse 2s infinite; }
+@keyframes acc-pulse { 70% { box-shadow: 0 0 0 6px rgba(93, 242, 176, 0); } 100% { box-shadow: 0 0 0 0 rgba(93, 242, 176, 0); } }
+.acc-weak { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--wait-soft); color: var(--wait-text); font-style: normal; font-size: 10px; font-weight: 700; cursor: help; }
+.acc-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; white-space: nowrap; color: var(--acc); background: color-mix(in srgb, var(--acc) 14%, transparent); }
+.acc-row.is-warn .acc-left, .acc-row.is-fail .acc-left { color: var(--acc); }
+.acc-now { color: #5df2b0; font-weight: 600; }
+
+.acc-dialog { width: min(640px, calc(100vw - 32px)); }
+.acc-dialog .adm-close { position: absolute; top: 12px; right: 12px; }
+.acc-dialog .dialog-actions { flex-wrap: wrap; }
+.acc-title { display: flex; align-items: center; gap: 10px; }
+.acc-title b { color: var(--acc); font-family: var(--mono, ui-monospace, Consolas, monospace); }
+.acc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 12px 0; }
+.acc-grid .is-wide { grid-column: 1 / -1; }
+.acc-plus { display: flex; flex-wrap: wrap; gap: 6px; align-self: end; padding-bottom: 4px; }
+.acc-grid .adm-check { grid-column: 1 / -1; margin: 0; }
+.acc-warn { color: var(--wait-text); }
+.acc-secret b { user-select: all; font-size: 13px; }
+@media (max-width: 560px) { .acc-grid { grid-template-columns: 1fr; } }

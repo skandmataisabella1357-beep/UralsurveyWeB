@@ -26,6 +26,7 @@
     refusals: '<circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/>',
     audit: '<path d="M6 3h9l4 4v14H6ZM9 10h7M9 14h7M9 18h4"/>',
     outages: '<path d="M2 12h4l2.500-6 3 12 2.500-6h2"/><path d="M18.500 9.500l3.500 5M22 9.500l-3.500 5"/>',
+    access: '<circle cx="9" cy="9" r="3.5"/><path d="M2.500 20c.6-3.600 3.200-5.500 6.500-5.500 1.300 0 2.500.3 3.500.9M15 17.500l2.500 2.500 4.500-5"/>',
     admins: '<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.500 7-10V6Z"/><path d="M9.500 12l2 2 3.500-4"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2.100 2.100M16.300 16.300l2.100 2.100M5.600 18.400l2.100-2.100M16.300 7.700l2.100-2.100"/>',
   };
@@ -241,9 +242,10 @@
     },
     settings: { title: 'Настройки', path: '/api/admin/settings', custom: 'settings' },
     outages: { title: 'Обрывы связи', needs: [], custom: 'outages', readonly: true },
+    access: { title: 'Доступы', needs: [], custom: 'access', readonly: true },
   };
   const TITLE = { subnets: 'расчётный модуль', stations: 'станция', mountpoints: 'точка', clients: 'клиент', tariffs: 'тариф', subscriptions: 'подписка', ntrip_logins: 'логин', admins: 'администратор', settings: 'настройки', sessions: 'сеанс' };
-  const NAV = ['overview', 'stations', 'subnets', 'outages', 'mountpoints', 'clients', 'logins', 'tariffs', 'subscriptions', 'sessions', 'refusals', 'audit', 'admins', 'settings'];
+  const NAV = ['overview', 'stations', 'subnets', 'outages', 'mountpoints', 'access', 'clients', 'logins', 'tariffs', 'subscriptions', 'sessions', 'refusals', 'audit', 'admins', 'settings'];
 
   // ---------- Вход ----------
 
@@ -480,6 +482,13 @@
     else open(tile.dataset.view);
   });
 
+  // Раздел поверх карты закрывается крестиком или клавишей Esc — открывается карта сети
+  $('main-close').addEventListener('click', () => open('stations'));
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || $('main').hidden || document.querySelector('dialog[open]') || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    open('stations');
+  });
+
   async function open(id) {
     view = VIEWS[id] && (!VIEWS[id].adminOnly || isAdmin()) ? id : 'overview';
     try { localStorage.setItem('admin-view', view); } catch (err) { /* не запомнится */ }
@@ -523,7 +532,10 @@
     $('list-box').hidden = view === 'overview' || Boolean(v.map);
     $('sub-box').hidden = true;
     $('out-box').hidden = view !== 'outages';
+    $('acc-box').hidden = view !== 'access';
     if (view === 'outages') { $('list-box').hidden = true; return renderOutages(); }
+    // Доступы рисует свой модуль: ему нужны только запросы к серверу и список роверов на связи
+    if (view === 'access') { $('list-box').hidden = true; return window.UralAccess.show({ box: $('acc-box'), dialog: $('acc-dialog'), api, toast, admin: isAdmin(), rovers: live ? live.clients : [] }); }
     if (view === 'overview') return renderOverview();
     if (v.custom === 'subnets') {
       renderSubnets();

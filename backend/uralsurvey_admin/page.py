@@ -13,7 +13,7 @@ from html import escape
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FILES = {"/ui/": ROOT / "app" / "renderer", "/modules/coordsys/": ROOT / "modules" / "coordsys", "/modules/layers/": ROOT / "modules" / "layers",
-         "/modules/transform/": ROOT / "modules" / "transform", "/modules/geoid/": ROOT / "modules" / "geoid", "/": ROOT / "server" / "web"}
+         "/modules/transform/": ROOT / "modules" / "transform", "/modules/geoid/": ROOT / "modules" / "geoid", "/modules/access/": ROOT / "modules" / "access", "/": ROOT / "server" / "web"}
 POLICY = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
 
 
@@ -101,7 +101,11 @@ def workspace() -> str:
                  cls="srv-panel glass", id="list-box", hidden=True)
     # Журнал обрывов связи: полосы времени по станциям и список
     outages = el("section", cls="srv-panel glass", id="out-box", hidden=True)
-    main = el("main", overview, el("section", id="sub-box", hidden=True), listing, outages, cls="adm-float", id="main", hidden=True)
+    # Доступы: логины со сроками и подключениями одним списком (модуль access)
+    access = el("section", cls="srv-panel glass acc", id="acc-box", hidden=True)
+    # Крестик закрывает раздел и возвращает к карте сети
+    shut = el("button", "×", cls="icon-btn adm-float-close", type="button", id="main-close", title="Закрыть раздел (Esc)")
+    main = el("main", shut, overview, el("section", id="sub-box", hidden=True), listing, outages, access, cls="adm-float", id="main", hidden=True)
     # Разделы — одной вертикальной лентой значков у левого края
     ribbon = el("nav", cls="adm-ribbon glass", id="nav", aria_label="Разделы")
     # Всплывающая подсказка у значков ленты: что это и что сейчас показано
@@ -141,12 +145,13 @@ def dialogs() -> str:
         el("div", cls="adm-sub-stations", id="area-list"), error("area-error"),
         el("div", button("Отмена", id="area-cancel"), button("Сохранить", "primary", type="submit"), cls="dialog-actions"),
         id="area-form", novalidate=True), cls="dialog adm-dialog", id="area-dialog")
-    return "".join([form, subnet, setting, run, layer, area])
+    grant = el("dialog", cls="dialog adm-dialog acc-dialog", id="acc-dialog")
+    return "".join([form, subnet, setting, run, layer, area, grant])
 
 
 def admin_page() -> bytes:
-    styles = ["/ui/vendor/leaflet/leaflet.css", "/ui/styles.css", "/server.css", "/admin.css"]
-    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/modules/transform/transform.js", "/modules/geoid/geoid.js", "/modules/layers/parse.js", "/ui/map.js", "/admin.js"]
+    styles = ["/ui/vendor/leaflet/leaflet.css", "/ui/styles.css", "/server.css", "/admin.css", "/modules/access/access.css"]
+    scripts = ["/ui/vendor/leaflet/leaflet.js", "/ui/format.js", "/modules/coordsys/coordsys.js", "/modules/transform/transform.js", "/modules/geoid/geoid.js", "/modules/layers/parse.js", "/modules/access/access.js", "/ui/map.js", "/admin.js"]
     head = el(
         "head", el("meta", charset="utf-8"), el("meta", name="viewport", content="width=device-width, initial-scale=1"),
         el("meta", http_equiv="Content-Security-Policy", content=POLICY), el("title", "Uralsurvey — панель администратора"),

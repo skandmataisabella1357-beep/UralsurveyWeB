@@ -895,6 +895,54 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((got["count"], got["open"], [i["kind"] for i in got["items"]]), (2, False, ["link", "link", "service"]))
         self.assertEqual(a.call("DELETE", f"/api/admin/stations/{st['id']}")[0], 200)
 
+    def test_09i_access(self):
+        """Доступы: перенос логинов из прежней программы, список с состояниями и правка срока одним действием."""
+        a = self.admin
+        key = {"X-Ural-Key": "internal-test-key"}
+        today = dt.date.today()
+        items = [
+            {"login": "nrs_live", "password": "ab", "ends_on": (today + dt.timedelta(days=200)).isoformat(), "max_sessions": 512, "org": "Геострой", "phone": "+7 900", "last_seen": "2026-10-01"},
+            {"login": "nrs_old", "password": "nrs_old", "ends_on": "2024-03-01", "max_sessions": 2},
+            {"login": "NRS_Live", "password": "whatever", "ends_on": "2030-01-01"},
+            {"login": "bad login", "password": "x", "ends_on": "2030-01-01"},
+            {"login": "nrs_space", "password": "a b", "ends_on": "2030-01-01"},
+        ]
+        status, res, _ = a.call("POST", "/api/admin/access/import", {"items": items})
+        self.assertEqual(status, 200, res)
+        self.assertEqual((res["created"], res["skipped"], [x["login"] for x in res["invalid"]]), (2, ["NRS_Live"], ["bad login", "nrs_space"]))
+        self.assertNotIn("password", json.dumps(res))
+        # Повторный перенос ничего не задваивает
+        self.assertEqual(a.call("POST", "/api/admin/access/import", {"items": items})[1]["created"], 0)
+
+        got = a.call("GET", "/api/admin/access")[1]
+        rows = {r["login"]: r for r in got["items"]}
+        live, old = rows["nrs_live"], rows["nrs_old"]
+        self.assertEqual((live["state"], live["max_sessions"], live["client"], live["phone"], live["weak"], live["days_left"]), ("active", 100, "Геострой", "+7 900", "short", 200))
+        self.assertEqual((old["state"], old["weak"], old["client"], old["ends_on"]), ("expired", "same", "nrs_old", "2024-03-01"))
+        self.assertTrue(live["last_seen_at"].startswith("2026-10-01"))
+        self.assertNotIn("password", json.dumps(got))
+        self.assertEqual(got["counts"]["weak"], sum(1 for r in got["items"] if r["weak"]))
+
+        # Раздача: прежний короткий пароль работает, истёкший логин точек не получает
+        users = Client(self.base).call("GET", "/internal/directory", headers=key)[1]["users"]
+        self.assertEqual(users["nrs_live"]["password"], "ab")
+        self.assertEqual((users["nrs_old"]["mountpoints"], users["nrs_old"]["expires"]), ([], "2000-01-01"))
+
+        # Продление истёкшего считается от сегодняшнего дня и сразу открывает доступ
+        status, row, _ = a.call("POST", f"/api/admin/access/{old['id']}", {"add_days": 30, "max_sessions": 4, "phone": "+7 911", "client": "ИП Старый"})
+        self.assertEqual(status, 200, row)
+        self.assertEqual((row["state"], row["days_left"], row["max_sessions"], row["phone"], row["client"]), ("expiring" if got["expiring_days"] >= 30 else "active", 30, 4, "+7 911", "ИП Старый"))
+        self.assertNotEqual(Client(self.base).call("GET", "/internal/directory", headers=key)[1]["users"]["nrs_old"]["expires"], "2000-01-01")
+        # Срок датой, приостановка с причиной, выключение логина
+        row = a.call("POST", f"/api/admin/access/{old['id']}", {"ends_on": "2031-05-05"})[1]
+        self.assertEqual((row["ends_on"], row["state"]), ("2031-05-05", "active"))
+        self.assertEqual(a.call("POST", f"/api/admin/access/{old['id']}", {"suspended": True})[0], 400, "без причины не приостанавливается")
+        row = a.call("POST", f"/api/admin/access/{old['id']}", {"suspended": True, "reason": "долг"})[1]
+        self.assertEqual((row["state"], row["suspend_reason"]), ("suspended", "долг"))
+        self.assertEqual(a.call("POST", f"/api/admin/access/{old['id']}", {"suspended": False})[1]["state"], "active")
+        self.assertEqual(a.call("POST", f"/api/admin/access/{old['id']}", {"active": False})[1]["state"], "off")
+        self.assertEqual(a.call("POST", "/api/admin/access/999999", {"active": False})[0], 404)
+
     def test_10_bruteforce(self):
         # Счётчик неудач общий на адрес и уже видел неверные пароли из прежних тестов:
         # не позже пятой попытки вход закрывается, и верный пароль тоже не проходит
