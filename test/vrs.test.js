@@ -506,3 +506,22 @@ test('VRS: сообщение 1030 собирается и разбираетс�
   q.add([{ sat: 'G07', iono: 0.01, geo: 0.01 }], 1000 + 3700);
   assert.strictEqual(q.of('G05').known, false, 'давние оценки забываются');
 });
+
+test('эфемериды: почасовые файлы сводятся в один — одна шапка, записи третьей версии подряд', () => {
+  const navsource = require('../modules/vrs/navsource');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ural-merge-'));
+  try {
+    const head = (v) => `     ${v}           N: GNSS NAV DATA    M: MIXED            RINEX VERSION / TYPE\n                                                            END OF HEADER\n`;
+    fs.writeFileSync(path.join(dir, 'B.rnx'), `${head('3.04')}G02 2026 10 09 04 00 00\n     b\n`);
+    fs.writeFileSync(path.join(dir, 'A.rnx'), `${head('3.05')}G01 2026 10 09 04 00 00\n     a`);
+    fs.writeFileSync(path.join(dir, 'C.rnx'), `${head('4.01')}> EPH G03 LNAV\nG03 2026 10 09 04 00 00\n`);
+    fs.writeFileSync(path.join(dir, 'D.rnx'), 'мусор без шапки');
+    const out = navsource.merge(['B.rnx', 'A.rnx', 'C.rnx', 'D.rnx'].map((n) => path.join(dir, n)), path.join(dir, 'spare.rnx'));
+    const text = fs.readFileSync(out, 'latin1');
+    assert.strictEqual(text.split('END OF HEADER').length, 2, 'шапка одна');
+    assert.ok(text.startsWith('     3.05'), 'шапка первого по имени файла');
+    assert.deepStrictEqual(text.split('\n').filter((l) => /^G\d\d /.test(l)).map((l) => l.slice(0, 3)), ['G01', 'G02']);
+    assert.ok(!text.includes('EPH') && text.endsWith('\n'));
+    assert.strictEqual(navsource.merge([path.join(dir, 'C.rnx'), path.join(dir, 'D.rnx')], path.join(dir, 'none.rnx')), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

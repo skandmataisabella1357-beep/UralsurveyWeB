@@ -80,4 +80,25 @@ async function ensure(dir, now, { hours = 4, count = 6, run = curl } = {}) {
   return { files, error };
 }
 
-module.exports = { ensure, choose, STATIONS };
+// Сводный файл из почасовых: шапка первого файла и записи всех подряд. Нужен программам, которым
+// подаётся один файл эфемерид (RTKLIB, PPP). Берутся файлы третьей версии формата: записи четвёртой
+// устроены иначе, под одной шапкой их смешивать нельзя. Возвращает путь или null, если собрать не из чего.
+function merge(files, out) {
+  let head = '';
+  const bodies = [];
+  for (const file of files.slice().sort()) {
+    const text = fs.readFileSync(file, 'latin1');
+    const at = text.indexOf('END OF HEADER');
+    if (at < 0 || !/^\s+3\.\d\d/.test(text)) continue;
+    const eol = text.indexOf('\n', at);
+    if (!head) head = text.slice(0, eol + 1);
+    const body = text.slice(eol + 1);
+    if (body.trim()) bodies.push(body.endsWith('\n') ? body : `${body}\n`);
+  }
+  if (!head || !bodies.length) return null;
+  fs.writeFileSync(`${out}.part`, head + bodies.join(''), 'latin1');
+  fs.renameSync(`${out}.part`, out);
+  return out;
+}
+
+module.exports = { ensure, choose, merge, STATIONS };

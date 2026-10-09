@@ -23,6 +23,7 @@ const rtcm = require('../rtcm/messages');
 const { Thinner } = require('../../modules/rtknet/thin');
 const rtklib = require('../../modules/rtknet/rtklib');
 const ephemeris = require('../../modules/rtknet/ephemeris');
+const navsource = require('../../modules/vrs/navsource');
 const orbits = require('../../modules/rtknet/orbits');
 const glonass = require('../../modules/rtknet/glonass');
 const network = require('../../modules/rtknet/network');
@@ -46,7 +47,7 @@ const RULES = {
 const WORDS = { fix: 'фиксированное', float: 'плавающее', none: 'нет решения' };
 
 async function start({ config, log = console.log, rules = {}, directoryUrl = process.env.URAL_DIRECTORY || '', directoryKey,
-  dataDir = process.env.URAL_DATA || path.join(__dirname, '..', '..', 'backend', 'data'), statePort = Number(process.env.URAL_SOLVER_PORT || 7104) }) {
+  dataDir = process.env.URAL_DATA || path.join(__dirname, '..', '..', 'backend', 'data'), statePort = Number(process.env.URAL_SOLVER_PORT || 7104), fetchSpare = navsource.ensure }) {
   const R = { ...RULES, ...rules };
   const startedAt = Date.now();
   const bin = process.env.URAL_RTKLIB || path.join(dataDir, 'rtklib');
@@ -166,6 +167,18 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     return { ...link, sol: null, quality: 'none', base };
   }
 
+  // Эфемериды для расчёта. Основной источник — сводный файл BKG; если он не скачался, берутся
+  // почасовые файлы станций из архива CDDIS и сводятся в один: расчёт не должен зависеть от одного архива.
+  async function navFor(from, to) {
+    const nav = await ephemeris.ensure(path.join(workDir, 'brdc'), from, to);
+    if (nav.files.length && !nav.error) return nav;
+    const hours = Math.min(50, Math.ceil((Date.now() - from) / HOUR) + 2);
+    const spare = await fetchSpare(path.join(workDir, 'brdc', 'hourly'), Date.now(), { hours }).catch((err) => ({ files: [], error: err.message }));
+    const merged = spare.files.length ? navsource.merge(spare.files, path.join(workDir, 'brdc', 'spare.rnx')) : null;
+    if (!merged) return { ...nav, error: [nav.error, spare.error].filter(Boolean).join('; ') };
+    return { files: [merged], error: '', spare: true };
+  }
+
   async function solve(task) {
     const began = Date.now();
     const P = { subnet: task.name, startedAt: began, stage: '', done: 0, total: 0, lines: [], finished: false, tookMs: null };
@@ -177,9 +190,10 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     if (!rtklib.available(bin)) return fail('На сервере не найден RTKLIB: расчёт невозможен.');
 
     stage('Эфемериды спутников');
-    const nav = await ephemeris.ensure(path.join(workDir, 'brdc'), began - R.windowHours * HOUR, began);
+    const nav = await navFor(began - R.windowHours * HOUR, began);
     if (!nav.files.length) return fail(`Нет эфемерид: ${nav.error || 'архив недоступен'}.`);
     if (nav.error) out.note = `Эфемериды не обновились (${nav.error}), считаем по прежним.`;
+    if (nav.spare) say('Эфемериды из запасного архива (CDDIS): основной недоступен');
     let fcn = {};
     try { fcn = glonass.channels(fs.readFileSync(nav.files[nav.files.length - 1], 'latin1')); } catch (err) { /* без ГЛОНАСС */ }
 
@@ -368,7 +382,7 @@ async function start({ config, log = console.log, rules = {}, directoryUrl = pro
     try {
       P.stage = 'Наблюдения станций';
       say(P.stage);
-      const nav = await ephemeris.ensure(path.join(workDir, 'brdc'), day, day);
+      const nav = await navFor(day, day);
       let fcn = {};
       try { fcn = glonass.channels(fs.readFileSync(nav.files[0], 'latin1')); } catch (err) { /* без ГЛОНАСС */ }
       const ready = [];
